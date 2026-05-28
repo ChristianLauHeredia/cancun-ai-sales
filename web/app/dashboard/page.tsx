@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import type { Lead, LeadStatus } from "@/lib/types";
 
 const STATUS_LABELS: Record<LeadStatus, { label: string; color: string }> = {
@@ -36,20 +37,48 @@ function scoreColor(score: number) {
 }
 
 export default function DashboardPage() {
+  const searchParams = useSearchParams();
+  const secret = searchParams.get("secret");
+  const dashboardSecret = process.env.NEXT_PUBLIC_DASHBOARD_SECRET;
+
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"pipeline" | "table">("pipeline");
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
-  useEffect(() => {
-    const url = statusFilter ? `/api/leads?status=${statusFilter}&limit=100` : "/api/leads?limit=100";
+  const fetchLeads = useCallback(() => {
+    const url = statusFilter
+      ? `/api/leads?status=${statusFilter}&limit=100`
+      : "/api/leads?limit=100";
     fetch(url)
       .then((r) => r.json())
       .then((d) => {
-        if (d.success) setLeads(d.data);
+        if (d.success) {
+          setLeads(d.data);
+          setLastRefresh(new Date());
+        }
       })
       .finally(() => setLoading(false));
   }, [statusFilter]);
+
+  useEffect(() => {
+    fetchLeads();
+    const interval = setInterval(fetchLeads, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchLeads]);
+
+  if (dashboardSecret && secret !== dashboardSecret) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center max-w-sm">
+          <div className="text-4xl mb-3">🔒</div>
+          <h2 className="font-bold text-gray-900 mb-1">Access Restricted</h2>
+          <p className="text-sm text-gray-500">Append <code className="bg-gray-100 px-1 rounded">?secret=YOUR_SECRET</code> to the URL.</p>
+        </div>
+      </div>
+    );
+  }
 
   const stats = {
     total: leads.length,
@@ -74,7 +103,16 @@ export default function DashboardPage() {
             <p className="text-xs text-gray-500">Cancun Dental Partners</p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400">
+            Updated {lastRefresh.toLocaleTimeString()}
+          </span>
+          <button
+            onClick={fetchLeads}
+            className="text-xs text-teal-600 hover:text-teal-700 border border-teal-200 hover:border-teal-300 rounded-lg px-2.5 py-1 transition-colors"
+          >
+            ↻ Refresh
+          </button>
           <button
             onClick={() => setView("pipeline")}
             className={`px-3 py-1.5 text-sm rounded-lg ${view === "pipeline" ? "bg-teal-600 text-white" : "bg-gray-100 text-gray-600"}`}
@@ -118,7 +156,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="space-y-2">
                   {leadsByStatus(statuses).map((lead) => (
-                    <LeadCard key={lead.id} lead={lead} />
+                    <LeadCard key={lead.id} lead={lead} dashboardSecret={secret ?? ""} onCallTriggered={fetchLeads} />
                   ))}
                   {leadsByStatus(statuses).length === 0 && (
                     <div className="text-center text-gray-300 text-xs py-6 border border-dashed border-gray-200 rounded-xl">
@@ -155,6 +193,7 @@ export default function DashboardPage() {
                   <th className="py-3 px-4 text-left font-medium">Needs</th>
                   <th className="py-3 px-4 text-left font-medium">Source</th>
                   <th className="py-3 px-4 text-left font-medium">Created</th>
+                  <th className="py-3 px-4 text-left font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -179,11 +218,18 @@ export default function DashboardPage() {
                     <td className="py-3 px-4 text-gray-400">
                       {new Date(lead.created_at).toLocaleDateString()}
                     </td>
+                    <td className="py-3 px-4">
+                      <TriggerCallButton
+                        leadId={lead.id}
+                        dashboardSecret={secret ?? ""}
+                        onSuccess={fetchLeads}
+                      />
+                    </td>
                   </tr>
                 ))}
                 {leads.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-gray-400">
+                    <td colSpan={8} className="py-12 text-center text-gray-400">
                       No leads found
                     </td>
                   </tr>
@@ -197,7 +243,77 @@ export default function DashboardPage() {
   );
 }
 
-function LeadCard({ lead }: { lead: Lead }) {
+function TriggerCallButton({
+  leadId,
+  dashboardSecret,
+  onSuccess,
+}: {
+  leadId: string;
+  dashboardSecret: string;
+  onSuccess: () => void;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "success" | "error">("idle");
+
+  async function triggerCall() {
+    setState("loading");
+    try {
+      const res = await fetch("/api/test/trigger-call", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-dashboard-secret": dashboardSecret,
+        },
+        body: JSON.stringify({ lead_id: leadId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setState("success");
+        onSuccess();
+        setTimeout(() => setState("idle"), 3000);
+      } else {
+        setState("error");
+        setTimeout(() => setState("idle"), 3000);
+      }
+    } catch {
+      setState("error");
+      setTimeout(() => setState("idle"), 3000);
+    }
+  }
+
+  const labels = {
+    idle: "📞 Call",
+    loading: "Dialing…",
+    success: "✅ Called",
+    error: "❌ Failed",
+  };
+
+  const colors = {
+    idle: "bg-teal-50 text-teal-700 hover:bg-teal-100 border-teal-200",
+    loading: "bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed",
+    success: "bg-green-50 text-green-700 border-green-200",
+    error: "bg-red-50 text-red-700 border-red-200",
+  };
+
+  return (
+    <button
+      onClick={triggerCall}
+      disabled={state === "loading"}
+      className={`text-xs px-2.5 py-1 rounded-lg border font-medium transition-colors ${colors[state]}`}
+    >
+      {labels[state]}
+    </button>
+  );
+}
+
+function LeadCard({
+  lead,
+  dashboardSecret,
+  onCallTriggered,
+}: {
+  lead: Lead;
+  dashboardSecret: string;
+  onCallTriggered: () => void;
+}) {
   const statusMeta = STATUS_LABELS[lead.status as LeadStatus];
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-3 text-sm">
@@ -218,6 +334,13 @@ function LeadCard({ lead }: { lead: Lead }) {
           {lead.dental_needs[0]}{lead.dental_needs.length > 1 ? ` +${lead.dental_needs.length - 1}` : ""}
         </div>
       )}
+      <div className="mt-2">
+        <TriggerCallButton
+          leadId={lead.id}
+          dashboardSecret={dashboardSecret}
+          onSuccess={onCallTriggered}
+        />
+      </div>
     </div>
   );
 }

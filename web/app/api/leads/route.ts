@@ -23,6 +23,19 @@ const createLeadSchema = z.object({
   ip_address: z.string().optional(),
 });
 
+async function notifyN8n(url: string, payload: unknown): Promise<void> {
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // best-effort — workflow will still run on retry
+  }
+}
+
 export async function POST(
   req: NextRequest
 ): Promise<NextResponse<ApiResponse<Lead>>> {
@@ -36,12 +49,8 @@ export async function POST(
     );
   }
 
-  const {
-    consent_tcpa,
-    trusted_form_cert_url,
-    ip_address,
-    ...leadData
-  } = parsed.data;
+  const { consent_tcpa, trusted_form_cert_url, ip_address, ...leadData } =
+    parsed.data;
 
   if (!consent_tcpa) {
     return NextResponse.json(
@@ -63,11 +72,14 @@ export async function POST(
     );
   }
 
-  const consentRecords = [
+  const resolvedIp =
+    ip_address ?? req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? null;
+
+  await supabaseAdmin.from("consent_logs").insert([
     {
       lead_id: lead.id,
       consent_type: "tcpa_call",
-      ip_address: ip_address ?? req.headers.get("x-forwarded-for") ?? null,
+      ip_address: resolvedIp,
       consent_text:
         "I consent to receive calls, including automated calls, from Cancun Dental Partners at the phone number provided.",
       trusted_form_cert_url: trusted_form_cert_url ?? null,
@@ -75,13 +87,24 @@ export async function POST(
     {
       lead_id: lead.id,
       consent_type: "tcpa_sms",
-      ip_address: ip_address ?? req.headers.get("x-forwarded-for") ?? null,
+      ip_address: resolvedIp,
       consent_text:
         "I consent to receive SMS messages from Cancun Dental Partners. Reply STOP to opt out.",
     },
-  ];
+  ]);
 
-  await supabaseAdmin.from("consent_logs").insert(consentRecords);
+  // Trigger n8n lead ingestion workflow — kicks off the AI voice call
+  notifyN8n(process.env.N8N_LEAD_WEBHOOK_URL ?? "", {
+    lead_id: lead.id,
+    first_name: lead.first_name,
+    last_name: lead.last_name,
+    phone: lead.phone,
+    email: lead.email,
+    dental_needs: lead.dental_needs,
+    preferred_timeline: lead.preferred_timeline,
+    estimated_budget: lead.estimated_budget,
+    source: lead.source,
+  });
 
   return NextResponse.json({ success: true, data: lead }, { status: 201 });
 }

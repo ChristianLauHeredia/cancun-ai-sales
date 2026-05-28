@@ -1,0 +1,293 @@
+{
+  "name": "Post-Call Lead Routing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "post-call-routing",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"received\": true } }}"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000002",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "value1": "={{ $json.outcome }}",
+                    "operation": "equal",
+                    "value2": "qualified_hot"
+                  }
+                ]
+              },
+              "output": 0
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "value1": "={{ $json.outcome }}",
+                    "operation": "equal",
+                    "value2": "qualified_warm"
+                  }
+                ]
+              },
+              "output": 1
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "value1": "={{ $json.outcome }}",
+                    "operation": "equal",
+                    "value2": "no_answer"
+                  }
+                ]
+              },
+              "output": 2
+            }
+          ],
+          "fallbackOutput": 3
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000003",
+      "name": "Route by Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "from": "={{ $vars.TWILIO_PHONE }}",
+        "to": "={{ $vars.FOUNDER_PHONE }}",
+        "message": "🔥 HOT LEAD: {{ $json.lead_id }} just qualified! Needs: {{ $json.dental_needs?.join(', ') ?? 'TBD' }}, Budget: {{ $json.budget ?? 'TBD' }}, Timeline: {{ $json.timeline ?? 'TBD' }}. Call them NOW!"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000004",
+      "name": "SMS Founder – Hot Alert",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [900, 100],
+      "credentials": {
+        "twilioApi": {
+          "name": "Twilio Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "leads",
+        "filters": {
+          "conditions": [
+            {
+              "column": "id",
+              "value": "={{ $json.lead_id }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000005",
+      "name": "Get Lead – Warm",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [900, 250],
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "from": "={{ $vars.TWILIO_PHONE }}",
+        "to": "={{ $('Get Lead – Warm').item.json.phone }}",
+        "message": "Hi {{ $('Get Lead – Warm').item.json.first_name }}! 😊 Thanks for chatting with our dental team. We'd love to share more info about how we can help with your {{ $json.dental_needs?.[0] ?? 'dental needs' }}. Reply YES for a free consultation!"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000006",
+      "name": "SMS Lead – Warm Followup",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1100, 250],
+      "credentials": {
+        "twilioApi": {
+          "name": "Twilio Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "hours"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000007",
+      "name": "Wait 2 Hours",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.APP_URL }}/api/test/trigger-call",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-dashboard-secret",
+              "value": "={{ $vars.DASHBOARD_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "lead_id",
+              "value": "={{ $json.lead_id }}"
+            }
+          ]
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000008",
+      "name": "Retry Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "leads",
+        "filters": {
+          "conditions": [
+            {
+              "column": "id",
+              "value": "={{ $json.lead_id }}"
+            }
+          ]
+        },
+        "fieldsToSend": "defineBelow",
+        "fields": {
+          "values": [
+            {
+              "fieldId": "status",
+              "fieldValue": "follow_up"
+            }
+          ]
+        }
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000009",
+      "name": "Update Lead – Cold",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [900, 550],
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase Credentials"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Route by Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Outcome": {
+      "main": [
+        [
+          {
+            "node": "SMS Founder – Hot Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Lead – Warm",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 2 Hours",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Lead – Cold",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Lead – Warm": {
+      "main": [
+        [
+          {
+            "node": "SMS Lead – Warm Followup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2 Hours": {
+      "main": [
+        [
+          {
+            "node": "Retry Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
