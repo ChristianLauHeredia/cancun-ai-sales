@@ -1,0 +1,152 @@
+{
+  "name": "Lead Ingestion Pipeline",
+  "id": "lead_ingestion_workflow",
+  "version": "1.0.0",
+  "description": "n8n workflow for capturing, validating, enriching, and routing leads through the system. Handles webhook intake, data validation, database persistence, consent logging, and voice agent routing.",
+  "active": true,
+  "nodes": [
+    {
+      "id": "webhook_lead_intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 250],
+      "parameters": {
+        "path": "webhook/lead",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {
+          "headers": {}
+        }
+      },
+      "webhookId": "lead-webhook-prod",
+      "description": "Webhook endpoint that receives lead data from web forms, chat, Facebook Messenger, and API integrations. Accepts POST requests with lead information and immediately returns 200 OK.",
+      "credentials": {
+        "httpBasicAuth": "none"
+      }
+    },
+    {
+      "id": "parse_webhook_body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [300, 250],
+      "parameters": {
+        "language": "javascript",
+        "jsCode": "// Parse and validate webhook payload\nconst body = $input.first().json.body;\n\n// Extract lead information with defaults\nconst lead = {\n  external_id: body.lead_id || generateId(),\n  name: body.name?.trim() || '',\n  email: body.email?.toLowerCase().trim() || '',\n  phone_number: normalizePhone(body.phone || ''),\n  phone_country_code: body.country_code || 'US',\n  source_channel: body.source || 'website',\n  procedures_interested: Array.isArray(body.procedures) ? body.procedures : [body.procedure || ''],\n  estimated_budget_min: parseInt(body.budget_min) || null,\n  estimated_budget_max: parseInt(body.budget_max) || null,\n  timeline: body.timeline || 'unknown',\n  age_range: body.age_range || null,\n  language_preference: body.language || 'english',\n  consent_call: body.consent_call === true,\n  consent_sms: body.consent_sms === true,\n  consent_email: body.consent_email === true,\n  notes: body.notes?.substring(0, 500) || '',\n  timestamp: new Date().toISOString(),\n  metadata: {\n    user_agent: body.user_agent || '',\n    ip_address: body.ip_address || '',\n    referrer: body.referrer || '',\n    utm_source: body.utm_source || '',\n    utm_campaign: body.utm_campaign || '',\n    utm_medium: body.utm_medium || ''\n  }\n};\n\nfunction generateId() {\n  return 'lead_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return '';\n  // Remove non-digit characters\n  return phone.replace(/\\D/g, '');\n}\n\n// Validation\nif (!lead.email && !lead.phone_number) {\n  throw new Error('Either email or phone number is required');\n}\n\nif (!lead.name || lead.name.length < 2) {\n  throw new Error('Valid name is required');\n}\n\nreturn { lead, raw_body: body };"
+      },
+      "description": "Parse webhook JSON body, normalize phone numbers, validate required fields, and extract consent indicators."
+    },
+    {
+      "id": "enrichment_function",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [500, 250],
+      "parameters": {
+        "language": "javascript",
+        "jsCode": "const lead = $input.first().json.lead;\n\n// Determine lead score based on available information\nlet score = 30; // base score\n\nif (lead.email) score += 10;\nif (lead.phone_number) score += 10;\nif (lead.procedures_interested.length > 0 && lead.procedures_interested[0]) score += 10;\n\nif (lead.estimated_budget_min && lead.estimated_budget_min >= 3000) score += 25;\nelse if (lead.estimated_budget_min && lead.estimated_budget_min >= 1500) score += 15;\nelse if (lead.estimated_budget_min) score += 5;\n\nif (lead.timeline === 'immediate' || lead.timeline === 'within_1_month') score += 15;\nelse if (lead.timeline === 'within_3_months') score += 10;\nelse if (lead.timeline === 'within_6_months') score += 5;\n\nif (lead.source_channel === 'chat' || lead.source_channel === 'form') score += 5;\nif (lead.consent_call || lead.consent_sms) score += 5;\n\n// Determine initial qualification status\nlet qualification = 'cold';\nif (score >= 80) qualification = 'hot';\nelse if (score >= 50) qualification = 'warm';\nelse if (score >= 30) qualification = 'cool';\n\n// Determine timezone from phone or use default\nlet timezone = 'America/Chicago';\nif (lead.phone_country_code === 'US') {\n  const areaCode = lead.phone_number?.substring(0, 3);\n  const tzMap = {\n    '201': 'America/New_York',\n    '212': 'America/New_York',\n    '310': 'America/Los_Angeles',\n    '415': 'America/Los_Angeles',\n    '512': 'America/Chicago',\n    '305': 'America/New_York',\n    '786': 'America/New_York'\n  };\n  timezone = tzMap[areaCode] || 'America/Chicago';\n}\n\nreturn {\n  ...lead,\n  lead_score: Math.min(100, score),\n  qualification_status: qualification,\n  timezone: timezone,\n  enriched_at: new Date().toISOString()\n};"
+      },
+      "description": "Enrich lead data: calculate lead score based on qualification factors, determine initial qualification status, estimate timezone from phone number."
+    },
+    {
+      "id": "supabase_insert_lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [700, 200],
+      "parameters": {
+        "host": "${SUPABASE_HOST}",
+        "port": 5432,
+        "database": "${SUPABASE_DB}",
+        "user": "${SUPABASE_USER}",
+        "password": "${SUPABASE_PASSWORD}",
+        "ssl": true,
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (\n  external_id,\n  name,\n  email,\n  phone_number,\n  phone_country_code,\n  source_channel,\n  procedures_interested,\n  estimated_budget_min,\n  estimated_budget_max,\n  timeline,\n  age_range,\n  language_preference,\n  lead_score,\n  qualification_status,\n  timezone,\n  notes,\n  created_at,\n  updated_at,\n  metadata\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW(), $17\n)\nON CONFLICT (external_id) DO UPDATE SET\n  lead_score = EXCLUDED.lead_score,\n  qualification_status = EXCLUDED.qualification_status,\n  updated_at = NOW()\nRETURNING id, external_id;",
+        "queryParams": [
+          "{{ $json.external_id }}",
+          "{{ $json.name }}",
+          "{{ $json.email }}",
+          "{{ $json.phone_number }}",
+          "{{ $json.phone_country_code }}",
+          "{{ $json.source_channel }}",
+          "{{ $json.procedures_interested | join(', ') }}",
+          "{{ $json.estimated_budget_min }}",
+          "{{ $json.estimated_budget_max }}",
+          "{{ $json.timeline }}",
+          "{{ $json.age_range }}",
+          "{{ $json.language_preference }}",
+          "{{ $json.lead_score }}",
+          "{{ $json.qualification_status }}",
+          "{{ $json.timezone }}",
+          "{{ $json.notes }}",
+          "{{ JSON.stringify($json.metadata) }}"
+        ]
+      },
+      "description": "Insert or update lead record in Supabase 'leads' table with all enriched data."
+    },
+    {
+      "id": "supabase_insert_consent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [700, 350],
+      "parameters": {
+        "host": "${SUPABASE_HOST}",
+        "port": 5432,
+        "database": "${SUPABASE_DB}",
+        "user": "${SUPABASE_USER}",
+        "password": "${SUPABASE_PASSWORD}",
+        "ssl": true,
+        "operation": "executeQuery",
+        "query": "INSERT INTO consent_logs (\n  lead_id,\n  lead_external_id,\n  call_consent,\n  sms_consent,\n  email_consent,\n  consent_source,\n  consent_timestamp,\n  ip_address,\n  user_agent\n) VALUES (\n  (SELECT id FROM leads WHERE external_id = $1),\n  $1,\n  $2,\n  $3,\n  $4,\n  $5,\n  NOW(),\n  $6,\n  $7\n);",
+        "queryParams": [
+          "{{ $json.external_id }}",
+          "{{ $json.consent_call }}",
+          "{{ $json.consent_sms }}",
+          "{{ $json.consent_email }}",
+          "{{ $json.source_channel }}",
+          "{{ $json.metadata.ip_address }}",
+          "{{ $json.metadata.user_agent }}"
+        ]
+      },
+      "description": "Log TCPA consent status in 'consent_logs' table for compliance audit trail."
+    },
+    {
+      "id": "check_routing_rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [900, 250],
+      "parameters": {
+        "language": "javascript",
+        "jsCode": "const lead = $input.first().json;\n\n// Determine next action based on lead score and qualifications\nlet action = 'email_nurture';\nlet route_to = 'none';\nlet priority = 'low';\n\nif (lead.lead_score >= 80 && lead.consent_call) {\n  // HOT: Route to voice agent for immediate call\n  action = 'route_to_voice_agent';\n  route_to = 'retell_voice_agent';\n  priority = 'critical';\n} else if (lead.lead_score >= 70 && lead.consent_sms) {\n  // WARM: Route to SMS first\n  action = 'route_to_sms';\n  route_to = 'twilio_sms';\n  priority = 'high';\n} else if (lead.lead_score >= 50 && lead.consent_email) {\n  // WARM: Route to email with callback offer\n  action = 'route_to_email';\n  route_to = 'sendgrid_callback_offer';\n  priority = 'medium';\n} else if (lead.consent_email) {\n  // COOL/COLD: Route to automated nurture sequence\n  action = 'route_to_automation';\n  route_to = 'automated_nurture';\n  priority = 'low';\n} else {\n  // No consent: hold for consent acquisition\n  action = 'hold_for_consent';\n  route_to = 'none';\n  priority = 'low';\n}\n\nreturn {\n  ...lead,\n  next_action: action,\n  route_to: route_to,\n  priority: priority,\n  ready_for_routing: route_to !== 'none'\n};"
+      },
+      "description": "Apply routing rules to determine where to send the lead based on score, consent, and qualification status."
+    },
+    {
+      "id": "condition_route_hot",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 100],
+      "parameters": {
+        "conditions": {
+          "operator": "and",
+          "conditions": [
+            {
+              "key": "{{ $json.route_to }}",
+              "operator": "equals",
+              "value": "retell_voice_agent"
+            }
+          ]
+        }
+      },
+      "description": "Check if lead should be routed to voice agent."
+    },
+    {
+      "id": "condition_route_sms",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1100, 200],
+      "parameters": {
+        "conditions": {
+          "operator": "and",
+          "conditions": [
+            {
+              "key": "{{ $json.route_to }}",
+              "operator": "equals",\n              \"value\": \"twilio_sms\"\n            }\n          ]\n        }\n      },\n      \"description\": \"Check if lead should be routed to SMS.\"\n    },\n    {\n      \"id\": \"condition_route_email\",\n      \"type\": \"n8n-nodes-base.if\",\n      \"typeVersion\": 1,\n      \"position\": [1100, 300],\n      \"parameters\": {\n        \"conditions\": {\n          \"operator\": \"and\",\n          \"conditions\": [\n            {\n              \"key\": \"{{ $json.route_to }}\",\n              \"operator\": \"equals\",\n              \"value\": \"sendgrid_callback_offer\"\n            }\n          ]\n        }\n      },\n      \"description\": \"Check if lead should be routed to email callback offer.\"\n    },\n    {\n      \"id\": \"retell_create_call\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4,\n      \"position\": [1300, 100],\n      \"parameters\": {\n        \"url\": \"https://api.retellai.com/v2/create-phone-call\",\n        \"method\": \"POST\",\n        \"headers\": {\n          \"Authorization\": \"Bearer {{ env.RETELL_API_KEY }}\",\n          \"Content-Type\": \"application/json\"\n        },\n        \"body\": {\n          \"agent_id\": \"{{ env.RETELL_VOICE_QUALIFIER_ID }}\",\n          \"phone_number\": \"{{ $json.phone_number }}\",\n          \"metadata\": {\n            \"lead_id\": \"{{ $json.external_id }}\",\n            \"name\": \"{{ $json.name }}\",\n            \"email\": \"{{ $json.email }}\",\n            \"lead_score\": \"{{ $json.lead_score }}\",\n            \"procedures\": \"{{ $json.procedures_interested | join(', ') }}\"\n          }\n        }\n      },\n      \"description\": \"Create outbound phone call with Retell AI voice agent.\"\n    },\n    {\n      \"id\": \"supabase_log_retell_call\",\n      \"type\": \"n8n-nodes-base.postgres\",\n      \"typeVersion\": 1,\n      \"position\": [1500, 100],\n      \"parameters\": {\n        \"host\": \"${SUPABASE_HOST}\",\n        \"port\": 5432,\n        \"database\": \"${SUPABASE_DB}\",\n        \"user\": \"${SUPABASE_USER}\",\n        \"password\": \"${SUPABASE_PASSWORD}\",\n        \"ssl\": true,\n        \"operation\": \"executeQuery\",\n        \"query\": \"INSERT INTO pipeline_events (lead_id, event_type, channel, outcome, metadata, created_at)\n        SELECT id, $2, $3, $4, $5, NOW() FROM leads WHERE external_id = $1;\",\n        \"queryParams\": [\n          \"{{ $input[0].json.external_id }}\",\n          \"call_attempted\",\n          \"voice_call\",\n          \"initiated\",\n          \"{{ JSON.stringify({retell_call_id: $json.call_id, phone: $input[0].json.phone_number}) }}\"\n        ]\n      },\n      \"description\": \"Log voice call initiation as pipeline event.\"\n    },\n    {\n      \"id\": \"slack_notify_hot_lead\",\n      \"type\": \"n8n-nodes-base.slack\",\n      \"typeVersion\": 1,\n      \"position\": [1500, 200],\n      \"parameters\": {\n        \"authentication\": \"oAuth2\",\n        \"channel\": \"#hot-leads\",\n        \"text\": \"Hot Lead Acquired - {{ $input[0].json.name }} ({{ $input[0].json.lead_score }}/100) \\\\nProcedures: {{ $input[0].json.procedures_interested | join(', ') }}\\\\nBudget: ${{ $input[0].json.estimated_budget_min }}-${{ $input[0].json.estimated_budget_max }}\\\\nTimeline: {{ $input[0].json.timeline }}\\\\n🔴 CALLING NOW\",\n        \"otherOptions\": {\n          \"threadReplyByEmail\": false\n        }\n      },\n      \"description\": \"Notify sales team on Slack of hot lead acquisition and voice call initiation.\"\n    },\n    {\n      \"id\": \"sendgrid_callback_email\",\n      \"type\": \"n8n-nodes-base.sendGrid\",\n      \"typeVersion\": 1,\n      \"position\": [1300, 300],\n      \"parameters\": {\n        \"templateId\": \"callback_offer_template\",\n        \"toEmail\": \"{{ $json.email }}\",\n        \"fromEmail\": \"hello@cancundentalpartners.com\",\n        \"subject\": \"Your Personalized Dental Plan - Cancun Dental Partners\",\n        \"dynamicTemplateData\": {\n          \"name\": \"{{ $json.name }}\",\n          \"procedures\": \"{{ $json.procedures_interested | join(', ') }}\",\n          \"estimated_savings\": \"{{ ($json.estimated_budget_max || 5000) * 0.65 | floor }}\",\n          \"callback_link\": \"https://calendly.com/cancun-dental-partners/consultation?name={{ $json.name }}&email={{ $json.email }}&lead_id={{ $json.external_id }}\"\n        }\n      },\n      \"description\": \"Send email callback offer with personalized information packet.\"\n    },\n    {\n      \"id\": \"twilio_send_sms\",\n      \"type\": \"n8n-nodes-base.twilio\",\n      \"typeVersion\": 1,\n      \"position\": [1300, 200],\n      \"parameters\": {\n        \"resource\": \"sms\",\n        \"toNumber\": \"{{ $json.phone_number }}\",\n        \"message\": \"Hi {{ $json.name }}! 👋 Thanks for your interest in dental care. Quick question—are you looking at procedures in the next few months? Reply YES or call 1-XXX-DENTAL to chat.\",\n        \"fromNumber\": \"{{ env.TWILIO_PHONE }}\"\n      },\n      \"description\": \"Send SMS to warm lead to test responsiveness.\"\n    },\n    {\n      \"id\": \"error_handler\",\n      \"type\": \"n8n-nodes-base.errorHandler\",\n      \"typeVersion\": 1,\n      \"position\": [1700, 250],\n      \"parameters\": {\n        \"continueOnFail\": true,\n        \"options\": {\n          \"message\": \"Lead Processing Error\",\n          \"description\": \"Failed to process lead: {{ $error.message }}\"\n        }\n      },\n      \"description\": \"Catch and log any errors in the lead ingestion pipeline.\"\n    },\n    {\n      \"id\": \"slack_error_notification\",\n      \"type\": \"n8n-nodes-base.slack\",\n      \"typeVersion\": 1,\n      \"position\": [1900, 350],\n      \"parameters\": {\n        \"authentication\": \"oAuth2\",\n        \"channel\": \"#errors\",\n        \"text\": \"🚨 Lead Ingestion Error\\\\nLead: {{ $input[0].json.name }}\\\\nError: {{ $error.message }}\\\\nTimestamp: {{ now() }}\",\n        \"otherOptions\": {}\n      },\n      \"description\": \"Notify ops team of processing errors.\"\n    }\n  ],\n  \"connections\": {\n    \"webhook_lead_intake\": {\n      \"main\": [[{\"node\": \"parse_webhook_body\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"parse_webhook_body\": {\n      \"main\": [[{\"node\": \"enrichment_function\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"enrichment_function\": {\n      \"main\": [[{\"node\": \"supabase_insert_lead\", \"type\": \"main\", \"index\": 0}, {\"node\": \"check_routing_rules\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_insert_lead\": {\n      \"main\": [[{\"node\": \"supabase_insert_consent\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_insert_consent\": {\n      \"main\": [[{\"node\": \"check_routing_rules\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"check_routing_rules\": {\n      \"main\": [[{\"node\": \"condition_route_hot\", \"type\": \"main\", \"index\": 0}, {\"node\": \"condition_route_sms\", \"type\": \"main\", \"index\": 0}, {\"node\": \"condition_route_email\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"condition_route_hot\": {\n      \"main\": [[{\"node\": \"retell_create_call\", \"type\": \"main\", \"index\": 0}]],\n      \"main_err\": [[{\"node\": \"slack_notify_hot_lead\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"condition_route_sms\": {\n      \"main\": [[{\"node\": \"twilio_send_sms\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"condition_route_email\": {\n      \"main\": [[{\"node\": \"sendgrid_callback_email\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"retell_create_call\": {\n      \"main\": [[{\"node\": \"supabase_log_retell_call\", \"type\": \"main\", \"index\": 0}, {\"node\": \"slack_notify_hot_lead\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_log_retell_call\": {\n      \"main\": [[{\"node\": \"error_handler\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"sendgrid_callback_email\": {\n      \"main\": [[{\"node\": \"error_handler\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"twilio_send_sms\": {\n      \"main\": [[{\"node\": \"error_handler\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"slack_notify_hot_lead\": {\n      \"main\": [[{\"node\": \"error_handler\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"error_handler\": {\n      \"main\": [[{\"node\": \"slack_error_notification\", \"type\": \"main\", \"index\": 0}]]\n    }\n  },\n  \"meta\": {\n    \"instanceId\": \"lead-ingestion-v1\",\n    \"createdAt\": \"2024-01-01T00:00:00Z\",\n    \"updatedAt\": \"2024-01-01T00:00:00Z\"\n  }\n}\n

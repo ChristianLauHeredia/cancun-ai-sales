@@ -1,0 +1,531 @@
+{
+  "schema_version": "1.0.0",
+  "description": "Rule engine for lead contact decisions. Provides fallback rules when AI orchestrator is unavailable, and configuration for rate limiting and business logic.",
+  "metadata": {
+    "organization": "Cancun Dental Partners",
+    "created_at": "2024-01-01T00:00:00Z",
+    "last_updated": "2024-01-01T00:00:00Z",
+    "maintainer": "AI Operations"
+  },
+
+  "business_hours": {
+    "start": "09:00",
+    "end": "20:00",
+    "timezone": "America/Chicago",
+    "description": "Hours when outbound calls should be initiated. SMS and email can be sent anytime but best response rates during these hours."
+  },
+
+  "contact_limits": {
+    "max_call_attempts": 3,
+    "max_sms_per_day": 2,
+    "max_emails_per_day": 2,
+    "call_cooldown_hours": 24,
+    "call_attempt_gap_hours": 2,
+    "sms_cooldown_hours": 4,
+    "email_cooldown_hours": 24,
+    "max_contacts_per_day": 5,
+    "max_contacts_per_week": 15,
+    "pause_after_no_response_attempts": 3,
+    "pause_duration_days": 7,
+    "description": "Rate limiting to prevent contact fatigue and ensure TCPA compliance."
+  },
+
+  "lead_score_bands": {
+    "hot": {
+      "range": [80, 100],
+      "primary_channel": "phone",
+      "call_priority": "immediate",
+      "sms_cadence": "as_backup",
+      "email_cadence": "transactional_only",
+      "max_response_time_minutes": 5,
+      "description": "Highly qualified, ready to buy, immediate action"
+    },
+    "warm": {
+      "range": [50, 79],
+      "primary_channel": "sms",
+      "secondary_channel": "phone",
+      "call_priority": "same_day",
+      "sms_cadence": "immediate",
+      "email_cadence": "follow_up_24h",
+      "max_response_time_minutes": 120,
+      "description": "Interested with some hesitation, nurture and test"
+    },
+    "cool": {
+      "range": [30, 49],
+      "primary_channel": "email",
+      "secondary_channel": "sms",
+      "call_priority": "avoid",
+      "sms_cadence": "wait_48h",
+      "email_cadence": "educational_content",
+      "max_response_time_minutes": 1440,
+      "description": "Curiosity-driven, informational needs"
+    },
+    "cold": {
+      "range": [1, 29],
+      "primary_channel": "email",
+      "secondary_channel": "none",
+      "call_priority": "never",
+      "sms_cadence": "never",
+      "email_cadence": "automated_nurture_weekly",
+      "max_response_time_minutes": 2880,
+      "description": "Early stage, automated nurture only"
+    }
+  },
+
+  "channel_priority_by_score": {
+    "80_to_100": [
+      {
+        "rank": 1,
+        "channel": "phone",
+        "rationale": "Highest conversion rate for hot leads",
+        "success_rate": 0.70,
+        "when": "immediately_if_business_hours"
+      },
+      {
+        "rank": 2,
+        "channel": "voicemail",
+        "rationale": "Non-intrusive, respectful, TCPA-safe",
+        "success_rate": 0.45,
+        "when": "after_unanswered_call_or_outside_hours"
+      },
+      {
+        "rank": 3,
+        "channel": "sms",
+        "rationale": "Quick follow-up if call unsuccessful",
+        "success_rate": 0.50,
+        "when": "4_hours_after_voicemail"
+      }
+    ],
+    "70_to_79": [
+      {
+        "rank": 1,
+        "channel": "sms",
+        "rationale": "Test responsiveness without pressure",
+        "success_rate": 0.45,
+        "when": "immediately"
+      },
+      {
+        "rank": 2,
+        "channel": "phone",
+        "rationale": "Call if SMS responded or after 4h",
+        "success_rate": 0.60,
+        "when": "if_sms_responded_or_4h_later"
+      },
+      {
+        "rank": 3,
+        "channel": "email",
+        "rationale": "Information packet if phone unsuccessful",
+        "success_rate": 0.28,
+        "when": "24_hours_after_call_attempt"
+      }
+    ],
+    "50_to_69": [
+      {
+        "rank": 1,
+        "channel": "email",
+        "rationale": "Educational content + callback offer",
+        "success_rate": 0.32,
+        "when": "immediately"
+      },
+      {
+        "rank": 2,
+        "channel": "sms",
+        "rationale": "If email not opened after 24h",
+        "success_rate": 0.22,
+        "when": "24_hours_later"
+      },
+      {
+        "rank": 3,
+        "channel": "phone",
+        "rationale": "Only if lead responds positively to email",
+        "success_rate": 0.35,
+        "when": "on_callback_appointment"
+      }
+    ],
+    "30_to_49": [
+      {
+        "rank": 1,
+        "channel": "email",
+        "rationale": "Nurture content, no hard sell",
+        "success_rate": 0.18,
+        "when": "wait_48h_then_send"
+      },
+      {
+        "rank": 2,
+        "channel": "none",
+        "rationale": "Automated nurture sequence",
+        "success_rate": 0.12,
+        "when": "route_to_automation"
+      }
+    ],
+    "1_to_29": [
+      {
+        "rank": 1,
+        "channel": "none",
+        "rationale": "Automated nurture only, no active outreach",
+        "success_rate": 0.08,
+        "when": "weekly_automated_email"
+      }
+    ]
+  },
+
+  "optimal_contact_times": {
+    "timezone_adjusted": true,
+    "description": "Optimal times to contact leads based on score and lead behavior patterns",
+    "preferred_times": {
+      "for_calls": {
+        "hot_leads": "immediately_if_business_hours",
+        "warm_leads_morning": "0700_0900",
+        "warm_leads_afternoon": "1400_1700",
+        "cool_leads": "avoid_calls"
+      },
+      "for_sms": {
+        "hot_leads": "immediately",
+        "warm_leads": "1000_1200_or_1500_1700",
+        "cool_leads": "1800_2000",
+        "avoid_windows": ["2100_0900"]
+      },
+      "for_email": {
+        "hot_leads": "transactional",
+        "warm_leads": "1400_1600",
+        "cool_leads": "1800_2000",
+        "best_day": "tuesday_wednesday_thursday"
+      }
+    },
+    "avoid_contact": {
+      "weekends_before_hours": "1000",
+      "lunch_hours": "1200_1300",
+      "evenings_after_hours": "2100",
+      "holidays": ["christmas", "new_years", "thanksgiving"]
+    }
+  },
+
+  "hot_lead_response_targets": {
+    "initial_contact_time_minutes": 5,
+    "follow_up_if_no_answer_minutes": 120,
+    "max_time_to_coordinator_transfer_minutes": 60,
+    "description": "Hot leads must be contacted within very short timeframes to maximize conversion"
+  },
+
+  "tcpa_compliance_rules": {
+    "version": "2024",
+    "critical": true,
+    "description": "TCPA (Telephone Consumer Protection Act) compliance requirements. Failure to comply results in legal liability.",
+    "consent_requirements": {
+      "calls": {
+        "prior_express_consent": true,
+        "written_agreement_required": true,
+        "revocation_honored": true,
+        "do_not_call_registry_checked": true,
+        "description": "Must have explicit prior written consent for calls"
+      },
+      "sms": {
+        "prior_express_consent": true,
+        "opt_in_confirmation": true,
+        "revocation_honored": true,
+        "description": "Must have explicit opt-in for SMS"
+      },
+      "email": {
+        "prior_express_consent": false,
+        "can_assume_consent": true,
+        "revocation_honored": true,
+        "unsubscribe_required": true,
+        "description": "Email has most lenient requirements but must provide unsubscribe"
+      }
+    },
+    "contact_time_restrictions": {
+      "calls_allowed_hours": "0800_2100",
+      "sms_allowed_hours": "0800_2100",
+      "timezone": "recipient_local_time",
+      "weekends_allowed": false,
+      "holidays_allowed": false
+    },
+    "do_not_call_checklist": [
+      "Lead on national do-not-call registry?",
+      "Lead explicitly requested do-not-call?",
+      "Company do-not-call list checked?",
+      "State-specific do-not-call list checked?",
+      "Lead has active opt-out from previous campaign?"
+    ],
+    "safe_harbor_procedures": {
+      "maintain_internal_dnc_list": true,
+      "update_frequency": "daily",
+      "honor_opt_outs_within": "24_hours",
+      "document_all_consent": true,
+      "retain_records": "4_years"
+    }
+  },
+
+  "escalation_triggers": {
+    "escalate_to_human_if": [
+      {
+        "condition": "lead_asked_medical_question",
+        "action": "escalate_to_dentist",
+        "priority": "high"
+      },
+      {
+        "condition": "lead_expressed_safety_concern",
+        "action": "escalate_to_coordinator",
+        "priority": "high"
+      },
+      {
+        "condition": "lead_explicitly_requested_human",
+        "action": "escalate_immediately",
+        "priority": "critical"
+      },
+      {
+        "condition": "3_call_attempts_no_response",
+        "action": "escalate_for_review",
+        "priority": "medium"
+      },
+      {
+        "condition": "multi_channel_no_response_48h",
+        "action": "escalate_for_review",
+        "priority": "medium"
+      },
+      {
+        "condition": "financing_question_raised",
+        "action": "escalate_to_coordinator",
+        "priority": "high"
+      },
+      {
+        "condition": "lead_became_hostile",
+        "action": "escalate_immediately",
+        "priority": "critical"
+      },
+      {
+        "condition": "lead_mentioned_competitor",
+        "action": "escalate_to_senior_agent",
+        "priority": "high"
+      }
+    ]
+  },
+
+  "lead_scoring_factors": {
+    "base_score": 30,
+    "positive_factors": [
+      {
+        "factor": "just_qualified_hot",
+        "points": 25,
+        "max_applies": 1
+      },
+      {
+        "factor": "just_qualified_warm",
+        "points": 15,
+        "max_applies": 1
+      },
+      {
+        "factor": "procedure_specified",
+        "points": 10,
+        "max_applies": 3
+      },
+      {
+        "factor": "budget_confirmed_3k_plus",
+        "points": 15,
+        "max_applies": 1
+      },
+      {
+        "factor": "budget_confirmed_1500_to_3k",
+        "points": 10,
+        "max_applies": 1
+      },
+      {
+        "factor": "timeline_within_1_month",
+        "points": 15,
+        "max_applies": 1
+      },
+      {
+        "factor": "timeline_within_3_months",
+        "points": 10,
+        "max_applies": 1
+      },
+      {
+        "factor": "timeline_within_6_months",
+        "points": 5,
+        "max_applies": 1
+      },
+      {
+        "factor": "email_opened_last_24h",
+        "points": 3,
+        "max_applies": 1
+      },
+      {
+        "factor": "email_link_clicked",
+        "points": 5,
+        "max_applies": 2
+      },
+      {
+        "factor": "sms_responded",
+        "points": 8,
+        "max_applies": 1
+      },
+      {
+        "factor": "form_submission_complete",
+        "points": 7,
+        "max_applies": 1
+      },
+      {
+        "factor": "organic_traffic_from_ads",
+        "points": 5,
+        "max_applies": 1
+      }
+    ],
+    "negative_factors": [
+      {
+        "factor": "no_response_to_contact_24h",
+        "points": -5,
+        "applies_per_day": true
+      },
+      {
+        "factor": "no_response_to_contact_48h",
+        "points": -10,
+        "applies_once": true
+      },
+      {
+        "factor": "timeline_6_plus_months",
+        "points": -10,
+        "max_applies": 1
+      },
+      {
+        "factor": "budget_not_confirmed",
+        "points": -5,
+        "max_applies": 1
+      },
+      {
+        "factor": "expressed_objection_unresolved",
+        "points": -8,
+        "max_applies": 3
+      },
+      {
+        "factor": "explicitly_declined",
+        "points": -30,
+        "max_applies": 1
+      },
+      {
+        "factor": "opted_out",
+        "points": -50,
+        "max_applies": 1
+      }
+    ]
+  },
+
+  "routing_rules": {
+    "default_channel": "email",
+    "description": "Rules for routing leads to contact channels based on characteristics",
+    "rules": [
+      {
+        "name": "hot_lead_call_immediately",
+        "condition": "lead_score >= 80 AND call_consent = true AND business_hours = true",
+        "action": "route_to_voice_agent_immediately",
+        "priority": 1
+      },
+      {
+        "name": "hot_lead_call_voicemail",
+        "condition": "lead_score >= 80 AND call_consent = true AND business_hours = false",
+        "action": "route_to_voicemail_agent",
+        "priority": 2
+      },
+      {
+        "name": "warm_lead_sms_first",
+        "condition": "lead_score >= 70 AND lead_score < 80 AND sms_consent = true",
+        "action": "route_to_sms_agent",
+        "priority": 3
+      },
+      {
+        "name": "warm_lead_email_callback",
+        "condition": "lead_score >= 50 AND lead_score < 70 AND email_consent = true",
+        "action": "route_to_email_agent_with_callback_offer",
+        "priority": 4
+      },
+      {
+        "name": "cold_lead_nurture",
+        "condition": "lead_score < 50 AND email_consent = true",
+        "action": "route_to_automated_nurture_sequence",
+        "priority": 5
+      },
+      {
+        "name": "opted_out",
+        "condition": "opt_in_status = 'opted_out'",
+        "action": "do_not_contact",
+        "priority": -1
+      },
+      {
+        "name": "insufficient_consent",
+        "condition": "call_consent = false AND sms_consent = false AND email_consent = false",
+        "action": "hold_for_consent_acquisition",
+        "priority": -1
+      }
+    ]
+  },
+
+  "retry_strategies": {
+    "max_call_retry_attempts": 3,
+    "max_sms_retry_attempts": 2,
+    "max_email_retry_attempts": 2,
+    "strategies": {
+      "aggressive": {
+        "applies_to": "hot_leads",
+        "call_attempts": 3,
+        "sms_attempts": 2,
+        "email_attempts": 1,
+        "days_to_escalate": 1,
+        "total_duration_days": 2
+      },
+      "moderate": {
+        "applies_to": "warm_leads",
+        "call_attempts": 2,
+        "sms_attempts": 2,
+        "email_attempts": 2,
+        "days_to_escalate": 3,
+        "total_duration_days": 7
+      },
+      "patient": {
+        "applies_to": "cool_leads",
+        "call_attempts": 0,
+        "sms_attempts": 0,
+        "email_attempts": 2,
+        "days_to_escalate": 7,
+        "total_duration_days": 14
+      },
+      "nurture_only": {
+        "applies_to": "cold_leads",
+        "call_attempts": 0,
+        "sms_attempts": 0,
+        "email_attempts": 1,
+        "days_to_escalate": 30,
+        "total_duration_days": 90
+      }
+    }
+  },
+
+  "success_metrics": {
+    "target_conversion_rates": {
+      "hot_to_scheduled_consultation": 0.60,
+      "hot_to_completed_procedure": 0.45,
+      "warm_to_scheduled_consultation": 0.30,
+      "warm_to_completed_procedure": 0.15,
+      "cool_to_scheduled_consultation": 0.08,
+      "cold_to_scheduled_consultation": 0.02
+    },
+    "response_rates_by_channel": {
+      "call_hot": 0.70,
+      "call_warm": 0.40,
+      "sms_hot": 0.50,
+      "sms_warm": 0.30,
+      "email_hot": 0.35,
+      "email_warm": 0.18
+    },
+    "optimal_lead_score": 75,
+    "description": "Targets for contact success and conversion rates"
+  },
+
+  "feature_flags": {
+    "aggressive_calling_enabled": true,
+    "sms_enabled": true,
+    "voicemail_enabled": true,
+    "ai_orchestrator_enabled": true,
+    "fallback_to_rules_engine": true,
+    "tcpa_compliance_strict_mode": true,
+    "daily_contact_limit_enabled": true
+  }
+}

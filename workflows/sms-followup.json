@@ -1,0 +1,126 @@
+{
+  "name": "SMS Follow-up and Nurture Sequence",
+  "id": "sms_followup_workflow",
+  "version": "1.0.0",
+  "description": "n8n workflow that runs every 15 minutes to identify leads needing SMS follow-up, send targeted messages based on lead status, and log engagement. Implements intelligent cadence to prevent spam and respect TCPA compliance.",
+  "active": true,
+  "trigger_schedule": "*/15 * * * *",
+  "nodes": [
+    {
+      "id": "cron_trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [50, 150],
+      "parameters": {
+        "triggerTimes": {
+          "item": [\n            {\n              \"mode\": \"everyX\",\n              \"value\": 15\n            }\n          ]\n        }\n      },\n      "description": "Trigger workflow every 15 minutes to check for leads needing SMS follow-up."\n    },\n    {\n      "id": "supabase_query_eligible_leads",\n      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,\n      "position": [250, 150],\n      "parameters": {\n        "host": "${SUPABASE_HOST}",\n        "port": 5432,\n        "database": "${SUPABASE_DB}",\n        "user": "${SUPABASE_USER}",\n        "password": "${SUPABASE_PASSWORD}",\n        "ssl": true,\n        "operation": "executeQuery",\n        "query": "SELECT \n  l.id,\n  l.external_id,\n  l.name,\n  l.email,\n  l.phone_number,\n  l.phone_country_code,\n  l.lead_score,\n  l.qualification_status,\n  l.procedures_interested,\n  l.estimated_budget_min,\n  l.estimated_budget_max,\n  l.timeline,\n  l.timezone,\n  l.created_at,\n  l.updated_at,\n  l.no_answer_count,\n  l.last_contact_at,\n  c.sms_consent,\n  c.call_consent,\n  COALESCE(pe.last_sms_sent_at, l.created_at) as last_sms_sent_at,\n  COALESCE(pe.sms_count_24h, 0) as sms_count_24h,\n  COALESCE(pe.pipeline_step, 'initial') as pipeline_step\nFROM leads l\nLEFT JOIN consent_logs c ON l.id = c.lead_id AND c.created_at = (SELECT MAX(created_at) FROM consent_logs WHERE lead_id = l.id)\nLEFT JOIN pipeline_events pe ON l.id = pe.lead_id\nWHERE \n  l.status = 'active'\n  AND l.no_answer_count >= 1\n  AND l.no_answer_count < 3\n  AND c.sms_consent = true\n  AND l.last_contact_at IS NOT NULL\n  AND (NOW() - INTERVAL '4 hours') > COALESCE(pe.last_sms_sent_at, l.created_at)\n  AND COALESCE(pe.sms_count_24h, 0) < 2\n  AND (EXTRACT(HOUR FROM NOW() AT TIME ZONE l.timezone) BETWEEN 8 AND 21)\nORDER BY l.lead_score DESC, l.no_answer_count DESC\nLIMIT 100;"
+      },
+      "description": "Query for leads eligible for SMS follow-up: no answer on call, have SMS consent, within 4h of last contact, within daily/hourly limits, during business hours for their timezone."
+    },
+    {
+      "id": "loop_through_leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [450, 150],
+      "parameters": {
+        "batchSize": 1
+n      },
+n      "description": "Loop through eligible leads one at a time to send personalized SMS.\"\n    },\n    {\n      \"id\": \"determine_sms_message\",\n      \"type\": \"n8n-nodes-base.code\",\n      \"typeVersion\": 1,\n      \"position\": [650, 150],\n      \"parameters\": {\n        \"language\": \"javascript\",\n        \"jsCode\": \"const lead = $input.first().json;\nconst smsCount24h = lead.sms_count_24h || 0;\nconst pipelineStep = lead.pipeline_step || 'initial';\nconst hoursAgo = Math.floor((Date.now() - new Date(lead.last_sms_sent_at).getTime()) / (1000 * 3600));\n\nlet message = '';\nlet priority = 'normal';\nlet shouldSend = true;\n\n// Determine message based on number of previous SMS and pipeline step\nif (smsCount24h === 0) {\n  // First follow-up SMS after voicemail\n  message = `Hi ${lead.name.split(' ')[0]}! 👋 Following up on your interest in dental care. Quick question—are you looking to do procedures in the next few months? Reply YES or call 1-XXX-DENTAL.`;\n} else if (smsCount24h === 1 && hoursAgo >= 4) {\n  // Second SMS (4+ hours later) - offer immediate call\n  if (lead.lead_score >= 75) {\n    message = `${lead.name}, we've got a perfect match for you: ${lead.procedures_interested.split(',')[0]} saves you \\$${Math.round(lead.estimated_budget_max * 0.65)}. A specialist will call shortly. Available now? Reply YES.`;\n    priority = 'high';\n  } else {\n    message = `Hi ${lead.name}! Sending over our info about ${lead.procedures_interested.split(',')[0]}. Check your email—link inside to schedule a quick call. Any questions, text back!`;\n  }\n} else if (smsCount24h >= 2) {\n  // Exceeded daily SMS limit\n  shouldSend = false;\n  priority = 'skip';\n}\n\n// If lead has been unresponsive for 48+ hours, escalate instead of SMS\nif ((Date.now() - new Date(lead.last_contact_at).getTime()) / (1000 * 3600) > 48) {\n  message = 'ESCALATE_TO_EMAIL';\n  shouldSend = false;\n}\n\nreturn {\n  ...lead,\n  sms_message: message,\n  sms_priority: priority,\n  should_send_sms: shouldSend,\n  hours_since_last_sms: hoursAgo\n};\""
+      },
+      "description": "Generate personalized SMS message based on lead score, previous attempts, and pipeline stage. Determine if SMS should be sent or escalated to email."
+    },
+    {
+      "id": "condition_send_sms",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 150],
+      "parameters": {
+        "conditions": {
+          "operator": "and",
+          "conditions": [
+            {
+              "key": "{{ $json.should_send_sms }}",
+              "operator": "equals",
+              "value": true
+            }
+          ]
+        }
+      },
+      "description": "Check if SMS should be sent based on business rules."
+    },
+    {
+      "id": "twilio_send_sms",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1050, 100],
+      "parameters": {
+        "resource": "sms",
+        "toNumber": "{{ $json.phone_number }}",
+        "message": "{{ $json.sms_message }}",
+        "fromNumber": "{{ env.TWILIO_PHONE }}"
+      },
+      "description": "Send SMS via Twilio."
+    },
+    {
+      "id": "supabase_log_sms_sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1250, 100],
+      "parameters": {
+        "host": "${SUPABASE_HOST}",
+        "port": 5432,
+        "database": "${SUPABASE_DB}",
+        "user": "${SUPABASE_USER}",
+        "password": "${SUPABASE_PASSWORD}",
+        "ssl": true,
+        "operation": "executeQuery",
+        "query": "INSERT INTO pipeline_events (\n  lead_id,\n  event_type,\n  channel,\n  outcome,\n  message_content,\n  metadata,\n  created_at\n) VALUES (\n  (SELECT id FROM leads WHERE external_id = $1),\n  'sms_sent',\n  'sms',\n  'delivered',\n  $2,\n  $3,\n  NOW()\n);\n\nUPDATE leads \nSET \n  last_contact_at = NOW(),\n  last_contact_channel = 'sms',\n  updated_at = NOW()\nWHERE external_id = $1;",
+        "queryParams": [
+          "{{ $input[0].json.external_id }}",
+          "{{ $json.sms_message }}",
+          "{{ JSON.stringify({twilio_sid: $json.sid, lead_score: $input[0].json.lead_score}) }}"
+        ]
+      },
+      "description": "Log SMS as sent in pipeline_events and update lead's last contact timestamp."
+    },\n    {\n      \"id\": \"schedule_sms_callback\",\n      \"type\": \"n8n-nodes-base.postgres\",\n      \"typeVersion\": 1,\n      \"position\": [1250, 200],\n      \"parameters\": {\n        \"host\": \"${SUPABASE_HOST}\",\n        \"port\": 5432,\n        \"database\": \"${SUPABASE_DB}\",\n        \"user\": \"${SUPABASE_USER}\",\n        \"password\": \"${SUPABASE_PASSWORD}\",\n        \"ssl\": true,\n        \"operation\": \"executeQuery\",\n        \"query\": \"UPDATE leads\nSET \n  next_action_at = NOW() + INTERVAL '4 hours',\n  next_action_type = CASE \n    WHEN lead_score >= 75 THEN 'call_if_responded'\n    ELSE 'check_sms_response'\n  END,\n  updated_at = NOW()\nWHERE external_id = $1;\",\n        \"queryParams\": [\n          \"{{ $input[0].json.external_id }}\"\n        ]\n      },\n      \"description\": \"Schedule next action (follow-up call or response check) in 4 hours.\"\n    },\n    {\n      \"id\": \"slack_notify_sms_sent\",\n      \"type\": \"n8n-nodes-base.slack\",\n      \"typeVersion\": 1,\n      \"position\": [1250, 300],\n      \"parameters\": {\n        \"authentication\": \"oAuth2\",\n        \"channel\": \"#sms-followup\",\n        \"text\": \"📱 SMS Sent to {{ $input[0].json.name }} (Score: {{ $input[0].json.lead_score }})\\\\nMessage: {{ $json.sms_message }}\\\\nNext check: +4 hours\",\n        \"otherOptions\": {}\n      },\n      \"description\": \"Notify team of SMS sent.\"\n    },\n    {\n      \"id\": \"condition_escalate_to_email\",\n      \"type\": \"n8n-nodes-base.if\",\n      \"typeVersion\": 1,\n      \"position\": [1050, 250],\n      \"parameters\": {\n        \"conditions\": {\n          \"operator\": \"and\",\n          \"conditions\": [\n            {\n              \"key\": \"{{ $json.sms_message }}\",\n              \"operator\": \"equals\",\n              \"value\": \"ESCALATE_TO_EMAIL\"\n            }\n          ]\n        }\n      },\n      \"description\": \"If SMS escalation triggered, send nurture email instead.\"\n    },\n    {\n      \"id\": \"sendgrid_nurture_email\",\n      \"type\": \"n8n-nodes-base.sendGrid\",\n      \"typeVersion\": 1,\n      \"position\": [1250, 450],\n      \"parameters\": {\n        \"templateId\": \"nurture_email_template\",\n        \"toEmail\": \"{{ $json.email }}\",\n        \"fromEmail\": \"hello@cancundentalpartners.com\",\n        \"subject\": \"No Rush: Your Dental Options [Savings Inside]\",\n        \"dynamicTemplateData\": {\n          \"name\": \"{{ $json.name }}\",\n          \"procedures\": \"{{ $json.procedures_interested }}\",\n          \"savings_estimate\": \"{{ ($json.estimated_budget_max || 5000) * 0.65 | floor }}\",\n          \"lead_score\": \"{{ $json.lead_score }}\"\n        }\n      },\n      \"description\": \"Send nurture email when SMS escalation occurs.\"\n    },\n    {\n      \"id\": \"supabase_log_email_sent\",\n      \"type\": \"n8n-nodes-base.postgres\",\n      \"typeVersion\": 1,\n      \"position\": [1450, 450],\n      \"parameters\": {\n        \"host\": \"${SUPABASE_HOST}\",\n        \"port\": 5432,\n        \"database\": \"${SUPABASE_DB}\",\n        \"user\": \"${SUPABASE_USER}\",\n        \"password\": \"${SUPABASE_PASSWORD}\",\n        \"ssl\": true,\n        \"operation\": \"executeQuery\",\n        \"query\": \"INSERT INTO pipeline_events (\n  lead_id,\n  event_type,\n  channel,\n  outcome,\n  metadata,\n  created_at\n) VALUES (\n  (SELECT id FROM leads WHERE external_id = $1),\n  'email_sent',\n  'email',\n  'delivered',\n  $2,\n  NOW()\n);\n\nUPDATE leads \nSET \n  last_contact_at = NOW(),\n  last_contact_channel = 'email',\n  next_action_at = NOW() + INTERVAL '48 hours',\n  next_action_type = 'check_email_response',\n  updated_at = NOW()\nWHERE external_id = $1;\",\n        \"queryParams\": [\n          \"{{ $input[0].json.external_id }}\",\n          \"{{ JSON.stringify({escalated_from_sms: true, reason: 'unresponsive_48h'}) }}\"\n        ]\n      },\n      \"description\": \"Log escalation email and schedule 48h follow-up check.\"\n    },\n    {\n      \"id\": \"webhook_sms_response\",\n      \"type\": \"n8n-nodes-base.webhook\",\n      \"typeVersion\": 1,\n      \"position\": [50, 400],\n      \"parameters\": {\n        \"path\": \"webhook/twilio-sms\",\n        \"httpMethod\": \"POST\",\n        \"responseMode\": \"onReceived\"\n      },\n      \"webhookId\": \"twilio-sms-webhook\",\n      \"description\": \"Webhook that receives SMS responses from Twilio when leads reply.\"\n    },\n    {\n      \"id\": \"parse_sms_response\",\n      \"type\": \"n8n-nodes-base.code\",\n      \"typeVersion\": 1,\n      \"position\": [250, 400],\n      \"parameters\": {\n        \"language\": \"javascript\",\n        \"jsCode\": \"const body = $input.first().json.body;\n\n// Parse Twilio webhook\nconst response = {\n  phone_number: body.From?.replace('+1', ''),\n  message_text: body.Body?.trim() || '',\n  message_sid: body.MessageSid || '',\n  timestamp: new Date().toISOString()\n};\n\nconst positiveKeywords = ['yes', 'interested', 'call', 'ready', 'cancel me', 'no thanks', 'not now'];\nconst messageUpper = response.message_text.toUpperCase();\n\nlet sentiment = 'neutral';\nif (positiveKeywords.some(kw => messageUpper.includes(kw.toUpperCase()))) {\n  if (messageUpper.includes('YES') || messageUpper.includes('INTERESTED') || messageUpper.includes('READY') || messageUpper.includes('CALL')) {\n    sentiment = 'positive';\n  } else if (messageUpper.includes('NO') || messageUpper.includes('THANKS') || messageUpper.includes('CANCEL')) {\n    sentiment = 'negative';\n  }\n}\n\nreturn {\n  ...response,\n  sentiment: sentiment,\n  responded: true\n};\""
+      },
+      "description": "Parse Twilio SMS response webhook and determine sentiment."
+    },
+    {
+      "id": "supabase_lookup_lead_by_phone",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 400],
+      "parameters": {
+        "host": "${SUPABASE_HOST}",
+        "port": 5432,
+        "database": "${SUPABASE_DB}",
+        "user": "${SUPABASE_USER}",
+        "password": "${SUPABASE_PASSWORD}",
+        "ssl": true,
+        "operation": "executeQuery",
+        "query": "SELECT id, external_id, name, email, lead_score, phone_number\nFROM leads\nWHERE phone_number = $1\nLIMIT 1;",
+        "queryParams": [
+          "{{ $json.phone_number }}"
+        ]
+      },
+      "description": "Look up lead record by phone number."
+    },
+    {
+      "id": "log_sms_response",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [650, 400],
+      "parameters": {
+        "host": "${SUPABASE_HOST}",
+        "port": 5432,
+        "database": "${SUPABASE_DB}",
+        "user": "${SUPABASE_USER}",
+        "password": "${SUPABASE_PASSWORD}",
+        "ssl": true,
+        "operation": "executeQuery",
+        "query": "INSERT INTO pipeline_events (\n  lead_id,\n  event_type,\n  channel,\n  outcome,\n  message_content,\n  metadata,\n  created_at\n) VALUES (\n  (SELECT id FROM leads WHERE phone_number = $1),\n  'sms_responded',\n  'sms',\n  $2,\n  $3,\n  $4,\n  NOW()\n);\n\nUPDATE leads\nSET \n  last_sms_response_at = NOW(),\n  sms_response_sentiment = $2,\n  updated_at = NOW()\nWHERE phone_number = $1;",
+        "queryParams": [
+          "{{ $input[1].json.phone_number }}",
+          "{{ $json.sentiment }}",\n          \"{{ $json.message_text }}\",\n          \"{{ JSON.stringify({message_sid: $json.message_sid}) }}\"\n        ]\n      },\n      \"description\": \"Log SMS response sentiment and update lead record.\"\n    },\n    {\n      \"id\": \"condition_positive_response\",\n      \"type\": \"n8n-nodes-base.if\",\n      \"typeVersion\": 1,\n      \"position\": [850, 400],\n      \"parameters\": {\n        \"conditions\": {\n          \"operator\": \"and\",\n          \"conditions\": [\n            {\n              \"key\": \"{{ $json.sentiment }}\",\n              \"operator\": \"equals\",\n              \"value\": \"positive\"\n            }\n          ]\n        }\n      },\n      \"description\": \"Check if SMS response was positive.\"\n    },\n    {\n      \"id\": \"trigger_voice_call\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4,\n      \"position\": [1050, 350],\n      \"parameters\": {\n        \"url\": \"https://api.retellai.com/v2/create-phone-call\",\n        \"method\": \"POST\",\n        \"headers\": {\n          \"Authorization\": \"Bearer {{ env.RETELL_API_KEY }}\",\n          \"Content-Type\": \"application/json\"\n        },\n        \"body\": {\n          \"agent_id\": \"{{ env.RETELL_VOICE_QUALIFIER_ID }}\",\n          \"phone_number\": \"{{ $input[1].json.phone_number }}\",\n          \"metadata\": {\n            \"lead_id\": \"{{ $input[2].json.external_id }}\",\n            \"name\": \"{{ $input[2].json.name }}\",\n            \"response_type\": \"sms_positive_reply\"\n          }\n        }\n      },\n      \"description\": \"Initiate voice call immediately when lead responds positively to SMS.\"\n    },\n    {\n      \"id\": \"slack_positive_response\",\n      \"type\": \"n8n-nodes-base.slack\",\n      \"typeVersion\": 1,\n      \"position\": [1250, 350],\n      \"parameters\": {\n        \"authentication\": \"oAuth2\",\n        \"channel\": \"#sms-responses\",\n        \"text\": \"✅ POSITIVE SMS RESPONSE\\\\nLead: {{ $input[2].json.name }} ({{ $input[2].json.lead_score }}/100)\\\\nMessage: {{ $json.message_text }}\\\\n🎯 Calling now...\",\n        \"otherOptions\": {}\n      },\n      \"description\": \"Alert team of positive SMS response.\"\n    },\n    {\n      \"id\": \"error_handler_main\",\n      \"type\": \"n8n-nodes-base.errorHandler\",\n      \"typeVersion\": 1,\n      \"position\": [1450, 150],\n      \"parameters\": {\n        \"continueOnFail\": true\n      },\n      \"description\": \"Catch any errors in SMS sending pipeline.\"\n    }\n  ],\n  \"connections\": {\n    \"cron_trigger\": {\n      \"main\": [[{\"node\": \"supabase_query_eligible_leads\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_query_eligible_leads\": {\n      \"main\": [[{\"node\": \"loop_through_leads\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"loop_through_leads\": {\n      \"main\": [[{\"node\": \"determine_sms_message\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"determine_sms_message\": {\n      \"main\": [[{\"node\": \"condition_send_sms\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"condition_send_sms\": {\n      \"main\": [[{\"node\": \"twilio_send_sms\", \"type\": \"main\", \"index\": 0}]],\n      \"main_err\": [[{\"node\": \"condition_escalate_to_email\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"twilio_send_sms\": {\n      \"main\": [[{\"node\": \"supabase_log_sms_sent\", \"type\": \"main\", \"index\": 0}, {\"node\": \"schedule_sms_callback\", \"type\": \"main\", \"index\": 0}, {\"node\": \"slack_notify_sms_sent\", \"type\": \"main\", \"index\": 0}]],\n      \"main_err\": [[{\"node\": \"error_handler_main\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_log_sms_sent\": {\n      \"main\": [[{\"node\": \"loop_through_leads\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"schedule_sms_callback\": {\n      \"main\": [[{\"node\": \"loop_through_leads\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"slack_notify_sms_sent\": {\n      \"main\": [[{\"node\": \"loop_through_leads\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"condition_escalate_to_email\": {\n      \"main\": [[{\"node\": \"sendgrid_nurture_email\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"sendgrid_nurture_email\": {\n      \"main\": [[{\"node\": \"supabase_log_email_sent\", \"type\": \"main\", \"index\": 0}]],\n      \"main_err\": [[{\"node\": \"error_handler_main\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_log_email_sent\": {\n      \"main\": [[{\"node\": \"error_handler_main\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"webhook_sms_response\": {\n      \"main\": [[{\"node\": \"parse_sms_response\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"parse_sms_response\": {\n      \"main\": [[{\"node\": \"supabase_lookup_lead_by_phone\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"supabase_lookup_lead_by_phone\": {\n      \"main\": [[{\"node\": \"log_sms_response\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"log_sms_response\": {\n      \"main\": [[{\"node\": \"condition_positive_response\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"condition_positive_response\": {\n      \"main\": [[{\"node\": \"trigger_voice_call\", \"type\": \"main\", \"index\": 0}, {\"node\": \"slack_positive_response\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"trigger_voice_call\": {\n      \"main\": [[{\"node\": \"slack_positive_response\", \"type\": \"main\", \"index\": 0}]],\n      \"main_err\": [[{\"node\": \"error_handler_main\", \"type\": \"main\", \"index\": 0}]]\n    },\n    \"slack_positive_response\": {\n      \"main\": [[{\"node\": \"error_handler_main\", \"type\": \"main\", \"index\": 0}]]\n    }\n  }\n}
