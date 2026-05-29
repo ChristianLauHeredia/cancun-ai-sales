@@ -48,30 +48,9 @@
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "from_number",
-              "value": "={{ $vars.RETELL_FROM_NUMBER }}"
-            },
-            {
-              "name": "to_number",
-              "value": "={{ $('Webhook').item.json.phone }}"
-            },
-            {
-              "name": "agent_id",
-              "value": "={{ $vars.RETELL_AGENT_ID }}"
-            },
-            {
-              "name": "metadata",
-              "value": "={{ { lead_id: $('Webhook').item.json.lead_id } }}"
-            },
-            {
-              "name": "retell_llm_dynamic_variables",
-              "value": "={{ { lead_name: $('Webhook').item.json.first_name, dental_need: ($('Webhook').item.json.dental_needs ?? [])[0] ?? '', timeline: $('Webhook').item.json.preferred_timeline ?? '', budget: $('Webhook').item.json.estimated_budget ?? '' } }}"
-            }
-          ]
-        }
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "=JSON.stringify({ from_number: $vars.RETELL_FROM_NUMBER, to_number: $json.phone, agent_id: $vars.RETELL_AGENT_ID, metadata: { lead_id: $json.lead_id }, retell_llm_dynamic_variables: { lead_name: $json.first_name, dental_need: ($json.dental_needs ?? [])[0] ?? '', timeline: $json.preferred_timeline ?? '', budget: $json.estimated_budget ?? '' } })"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -93,7 +72,7 @@
           "conditions": [
             {
               "keyName": "id",
-              "keyValue": "={{ $('Webhook').item.json.lead_id }}"
+              "keyValue": "={{ $('Webhook1').item.json.body.lead_id }}"
             }
           ]
         },
