@@ -295,3 +295,10 @@ create policy "Service role full access on pipeline_events"
 
 create policy "Service role full access on agent_decisions"
   on agent_decisions for all using (true) with check (true);
+
+-- ============================================
+-- GRANTS
+-- ============================================
+grant usage on schema public to service_role;
+grant all on all tables in schema public to service_role;
+grant all on all sequences in schema public to service_role;

@@ -50,7 +50,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "=JSON.stringify({ from_number: $vars.RETELL_FROM_NUMBER, to_number: $json.phone, agent_id: $vars.RETELL_AGENT_ID, metadata: { lead_id: $json.lead_id }, retell_llm_dynamic_variables: { lead_name: $json.first_name, dental_need: ($json.dental_needs ?? [])[0] ?? '', timeline: $json.preferred_timeline ?? '', budget: $json.estimated_budget ?? '' } })"
+        "body": "=JSON.stringify({ from_number: $vars.RETELL_FROM_NUMBER, to_number: $json.body.phone, agent_id: $vars.RETELL_AGENT_ID, metadata: { lead_id: $json.body.lead_id }, retell_llm_dynamic_variables: { lead_name: $json.body.first_name, dental_need: ($json.body.dental_needs ?? [])[0] ?? '', timeline: $json.body.preferred_timeline ?? '', budget: $json.body.estimated_budget ?? '' } })"
       },
       "credentials": {
         "httpHeaderAuth": {

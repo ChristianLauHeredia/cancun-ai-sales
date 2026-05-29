@@ -1,14 +1,209 @@
 # Cancun AI Sales Platform
 
-> **Demo for Cancun AI Ventures AI Specialist position** — a production-ready AI outbound sales system for dental tourism connecting US/Canadian patients with Cancun clinics.
+> **Code challenge for Cancun AI Ventures — AI Specialist position**
+>
+> A production-deployed AI outbound sales system. Patients opt in → AI voice agent calls within minutes → qualifies them live → hot leads get SMS-alerted to the founder or live-transferred → automated SMS follow-up for warm/cold/no-answer outcomes.
 
-<!-- Loom walkthrough: [INSERT LOOM URL] -->
+**Live:** [cancun-ai-sales.vercel.app](https://cancun-ai-sales.vercel.app)
 
 ---
 
-AI-powered outbound sales system: patients opt in → AI voice agent calls within minutes → qualifies them → live-transfers hot leads to the founder → automated follow-up via SMS/email for the rest.
+## What It Does
 
-## 5-Minute Quick Start
+```
+Patient fills form
+       │
+       ▼
+POST /api/leads  ─────────────────────────────────────────────────────────┐
+  • Validates input (Zod)                                                  │
+  • Logs TCPA consent                                                      │
+  • Saves lead to Supabase                                                 │
+  • Notifies n8n                                                           │
+       │                                                                   │
+       ▼                                                                   ▼
+n8n workflow-01                                               Dashboard refreshes
+  • Waits 10s (avoids calling immediately after opt-in)       • Shows new lead
+  • Calls Retell API → creates outbound phone call            • Status: "new" → "call_scheduled"
+  • Passes lead metadata + dynamic vars to AI agent
+       │
+       ▼
+Retell AI calls the lead
+  • AI agent qualifies: procedures, budget, timeline
+  • Outcomes: qualified_hot / qualified_warm / no_answer / live_transferred
+       │
+       ▼
+Retell fires call_analyzed webhook → POST /api/voice/webhook
+  • Updates calls table (transcript, sentiment, summary)
+  • Updates lead status
+  • Inserts agent_decision record
+  • Notifies n8n workflow-02
+       │
+       ├─── qualified_hot ──────→ Update lead → SMS founder: "🔥 HOT LEAD"
+       │
+       ├─── live_transferred ───→ Update lead → SMS founder: "✅ LIVE TRANSFER"
+       │
+       ├─── qualified_warm ─────→ Update lead → Fetch lead → SMS lead: "Hi, Sofia here..."
+       │
+       ├─── no_answer ──────────→ Wait 2h → Retry call (via /api/test/trigger-call)
+       │
+       └─── (fallback) ─────────→ Update lead status: cold
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Landing Page + Chat Widget                        │
+│                     Next.js 14 · TrustedForm TCPA                        │
+└──────────────────────────────┬──────────────────────────────────────────┘
+                               │ POST /api/leads
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Supabase (PostgreSQL)                          │
+│              leads │ calls │ messages │ agent_decisions │ consent_logs   │
+└────────┬──────────────────────────────────────────────────┬─────────────┘
+         │                                                  │
+         │ notify n8n                                       │ read/write
+         ▼                                                  ▼
+┌─────────────────────┐    webhooks    ┌────────────────────────────────────┐
+│    n8n Workflows    │◄───────────────│         Next.js API Routes          │
+│                     │                │                                    │
+│  01 lead-ingestion  │                │  /api/leads          ← form submit  │
+│  02 post-call-route │                │  /api/voice/webhook  ← Retell       │
+│  03 sms-followup    │                │  /api/sms/webhook    ← Twilio inbound│
+│                     │                │  /api/chat           ← chat widget  │
+└──────────┬──────────┘                │  /api/test/trigger-call ← dashboard │
+           │                           └────────────────────────────────────┘
+           │ create-phone-call
+           ▼
+┌──────────────────────┐    call_analyzed     ┌──────────────────────┐
+│      Retell AI       │─────────────────────►│   Voice Webhook      │
+│  AI Voice Agent      │                      │  (HMAC optional)     │
+│  Qualifies leads     │                      └──────────────────────┘
+│  Live-transfers hot  │
+└──────────────────────┘
+
+┌──────────────────────┐    ┌──────────────────────┐
+│       Twilio         │    │     Claude API        │
+│  Outbound SMS        │    │  Chat widget (Sofia)  │
+│  Warm/no-answer      │    │  tool_use lead capture│
+│  follow-up           │    │  CancunOrchestrator   │
+└──────────────────────┘    └──────────────────────┘
+```
+
+---
+
+## Tech Stack
+
+| Layer | Tool | Role |
+|-------|------|------|
+| **Frontend** | Next.js 14 (App Router) | Landing page, dashboard, chat widget |
+| **Database** | Supabase (PostgreSQL) | Leads, calls, messages, consent logs |
+| **Voice AI** | Retell AI | Outbound AI phone calls, qualification, live transfer |
+| **Orchestration** | n8n | Connects all services via webhooks (3 workflows) |
+| **SMS** | Twilio | Outbound follow-up, inbound response handling |
+| **AI Chat** | Claude API (Sonnet) | Chat widget + multi-tool orchestrator |
+| **Consent** | TrustedForm | TCPA compliance certificate capture |
+| **Hosting** | Vercel | Edge-deployed Next.js |
+
+---
+
+## n8n Workflows
+
+Three workflows handle the full automation pipeline:
+
+```
+workflow-01-lead-ingestion
+  Trigger: POST /webhook/lead-ingestion  (called by /api/leads)
+  ├── Respond 200 immediately
+  ├── Wait 10 seconds
+  ├── Retell API → create outbound phone call
+  │     from: $vars.RETELL_FROM_NUMBER
+  │     to:   $json.body.phone
+  │     metadata: { lead_id }
+  │     dynamic_vars: { lead_name, dental_need, timeline, budget }
+  └── Supabase → update lead status: "call_scheduled"
+
+workflow-02-post-call-routing
+  Trigger: POST /webhook/post-call  (called by /api/voice/webhook after call_analyzed)
+  ├── Respond 200 immediately
+  ├── Switch on $json.body.outcome:
+  │     qualified_hot / live_transferred → Update lead + SMS founder
+  │     qualified_warm                  → Update lead + fetch lead + SMS lead
+  │     no_answer                       → Wait 2h + retry call
+  │     (fallback)                      → Update lead: cold
+  └── All Supabase nodes reference: $('Webhook').item.json.body.lead_id
+
+workflow-03-sms-followup
+  Trigger: POST /webhook/sms-followup
+  ├── Switch on $json.body.template:
+  │     warm_followup    → SMS lead (Sofia warm message)
+  │     no_answer_retry  → SMS lead (callback request)
+  └── Supabase → log to messages table
+```
+
+### Import Instructions
+
+1. In n8n: **Settings → Import Workflow** → upload each JSON from `workflows/`
+2. Set credentials by exact name:
+
+| Credential Name | Type | Used By |
+|-----------------|------|---------|
+| `Supabase-API` | Supabase (service_role key) | All Supabase nodes |
+| `RetellAI-API` | HTTP Header Auth (`Authorization: Bearer KEY`) | HTTP Request nodes |
+| `Twilio-Account` | Twilio API | Twilio SMS nodes |
+
+3. Set n8n Variables:
+
+| Variable | Value |
+|----------|-------|
+| `RETELL_FROM_NUMBER` | Your Retell phone number (E.164) |
+| `RETELL_AGENT_ID` | Your Retell agent ID |
+| `TWILIO_FROM_NUMBER` | Your Twilio number |
+| `FOUNDER_PHONE` | Phone for hot-lead SMS alerts |
+| `APP_URL` | Your Next.js app URL |
+| `DASHBOARD_SECRET` | Matches `DASHBOARD_SECRET` in Vercel |
+
+4. Activate all three workflows (toggle ON)
+
+> **n8n quirk:** When importing, the Supabase node's Table and Field dropdowns will be empty — you must select them manually from the dropdowns in each node. The JSON stores the values but n8n requires a live lookup to populate these fields.
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/leads` | — | Create lead, log TCPA consent, notify n8n |
+| `GET` | `/api/leads` | — | List leads (paginated, filterable by status) |
+| `POST` | `/api/voice/webhook` | HMAC (opt-in) | Retell call events: started / ended / analyzed |
+| `POST` | `/api/sms/webhook` | Twilio sig | Inbound SMS from leads |
+| `POST` | `/api/chat` | — | Claude chat with Sofia (tool_use lead capture) |
+| `POST` | `/api/test/trigger-call` | Cookie / Header secret | Trigger Retell call from dashboard |
+
+---
+
+## What's Live
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Lead capture form | ✅ Live | Zod validation, TCPA consent |
+| TrustedForm TCPA cert | ✅ Live | Degrades gracefully if key absent |
+| AI voice calling (Retell) | ✅ Live | Outbound, qualifies leads by phone |
+| Retell webhook handler | ✅ Live | All 3 events: started / ended / analyzed |
+| Post-call SMS routing | ✅ Live | Hot → founder alert, warm → lead SMS |
+| Supabase persistence | ✅ Live | Leads, calls, transcripts, decisions |
+| Dashboard pipeline | ✅ Live | Real data, 30s auto-refresh |
+| Trigger test call button | ✅ Live | Calls Retell API directly |
+| Chat widget (Sofia) | ✅ Live | Claude tool_use loop, captures leads |
+| n8n workflows (3) | ✅ Importable | All `.body.` references corrected |
+| Email sequences | 🔲 Planned | — |
+
+---
+
+## Setup
 
 ```bash
 # 1. Install
@@ -16,161 +211,66 @@ cd cancun-ai-sales/web && npm install
 
 # 2. Configure
 cp .env.example .env.local
-# Fill in your API keys (Supabase, Retell, Anthropic, Twilio)
+# Fill in: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, RETELL_API_KEY,
+#          RETELL_AGENT_ID, RETELL_FROM_NUMBER, ANTHROPIC_API_KEY,
+#          TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER,
+#          DASHBOARD_SECRET, N8N_POSTCALL_WEBHOOK_URL
 
 # 3. Run database migrations
 npx supabase db push
 
 # 4. Start dev server
 npm run dev
+# → http://localhost:3000        landing page
+# → http://localhost:3000/dashboard   pipeline dashboard
 
-# 5. Import n8n workflows (in n8n UI: Settings → Import Workflow)
-# workflows/lead-ingestion.json
-# workflows/workflow-02-post-call-routing.json
-# workflows/sms-followup.json
+# 5. Import n8n workflows (see section above)
 ```
-
-Visit `http://localhost:3000` for the landing page, `http://localhost:3000/dashboard?secret=YOUR_SECRET` for the dashboard.
 
 ---
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Landing Page                              │
-│                   (Next.js + TrustedForm)                        │
-│              Lead opts in → consent recorded                     │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ POST /api/leads → notifies n8n
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Supabase (Backend)                          │
-│           leads | calls | messages | consent_logs                │
-└──────┬───────────────┬────────────────┬─────────────────────────┘
-       │               │                │
-       ▼               ▼                ▼
-┌─────────────┐ ┌─────────────┐ ┌──────────────┐
-│  Retell AI  │ │  Claude API │ │   Twilio     │
-│ Voice Agent │ │ Chat + Orch │ │  SMS/Email   │
-│ Qualifies   │ │ Assists +   │ │  Follow-up   │
-│ leads by    │ │ orchestrates│ │  sequences   │
-│ phone call  │ │ decisions   │ │              │
-└──────┬──────┘ └──────┬──────┘ └──────┬───────┘
-       │               │                │
-       └───────────────┴────────────────┘
-                           │ webhooks
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     n8n Workflows (3)                            │
-│  01 lead-ingestion  →  02 post-call-routing  →  03 sms-followup │
-└─────────────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Dashboard (Next.js)                           │
-│    Pipeline kanban | Call logs | Trigger Test Call button         │
-│    Auto-refreshes every 30s | DASHBOARD_SECRET protected          │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Tech Stack
-
-| Tool | Purpose |
-|------|---------|
-| **Retell AI** | AI voice calling — qualifies leads, live-transfers hot leads |
-| **n8n** | Workflow orchestration — connects all platforms via webhooks |
-| **Supabase** | PostgreSQL backend — leads, calls, messages, consent tracking |
-| **Claude API** | Chat widget + multi-agent orchestration (tool_use loop) |
-| **Twilio** | Outbound SMS follow-up sequences |
-| **Next.js 16** | Landing page, chat widget, and admin dashboard |
-| **TrustedForm** | TCPA consent certificate capture |
-
-## What's Live vs Mocked
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Lead capture form | ✅ Live | Zod validation, TCPA consent log |
-| TrustedForm cert | ✅ Live | Gracefully degrades if API key absent |
-| Retell voice webhook | ✅ Live | HMAC verified, all 3 events handled |
-| Supabase persistence | ✅ Live | All tables, RLS enabled |
-| Dashboard pipeline | ✅ Live | Real data, 30s auto-refresh |
-| Trigger Test Call button | ✅ Live | Calls Retell API, updates lead status |
-| Chat widget (Sofia) | ✅ Live | Claude API, captures leads via tool_use |
-| Twilio SMS | ✅ Live | Outbound via Twilio REST API |
-| n8n workflows | ✅ Importable | 3 workflows ready to import |
-| CancunOrchestrator | ✅ Live | Claude tool_use loop, 5 tools |
-| Email sequences | 🔲 Planned | Not in scope for this demo |
-| Retell agent config | 📄 Documented | `agents/voice-qualifier/prompt.md` |
-
-## n8n Workflows
-
-Import from `workflows/` into your n8n instance (Settings → Import Workflow):
-
-| File | Trigger | What it does |
-|------|---------|--------------|
-| `lead-ingestion.json` | `/webhook/lead-ingestion` | Receives new lead → triggers Retell call |
-| `workflow-02-post-call-routing.json` | `/webhook/post-call-routing` | Routes by outcome: hot→SMS founder, warm→SMS lead, no_answer→retry call, cold→follow_up |
-| `sms-followup.json` | `/webhook/sms-followup` | Multi-step SMS sequence with Twilio |
-
-After importing, copy each workflow's webhook URL into your `.env.local` as `N8N_*_WEBHOOK_URL`.
-
-<!-- n8n workflow screenshot: [INSERT SCREENSHOT] -->
-
-## How It Scales to Other Verticals
-
-This system is intentionally vertical-agnostic. To adapt to another industry:
-
-1. **Landing page** — swap dental needs checkboxes for your product's qualification questions
-2. **Retell agent prompt** (`agents/voice-qualifier/prompt.md`) — rewrite the script and `custom_analysis_data` fields
-3. **Voice webhook** (`/api/voice/webhook`) — the `LEAD_STATUS_MAP` and `CALL_OUTCOME_MAP` map Retell outcomes to your status enum
-4. **n8n workflows** — update the Switch node outcomes and SMS templates
-5. **Chat widget system prompt** (`/api/chat`) — swap Sofia's script for your industry context
-
-The underlying architecture (lead → AI call → qualify → route → follow-up) works for solar, insurance, SaaS demos, real estate, or any high-ticket inbound/outbound sales flow.
 
 ## Project Structure
 
 ```
 cancun-ai-sales/
-├── web/                         # Next.js 16 application
+├── web/                            # Next.js 14 app
 │   ├── app/
-│   │   ├── page.tsx             # Landing page (lead capture + TrustedForm)
-│   │   ├── dashboard/           # Admin pipeline dashboard
+│   │   ├── page.tsx                # Landing page (lead form + TrustedForm)
+│   │   ├── dashboard/page.tsx      # Pipeline kanban dashboard
 │   │   └── api/
-│   │       ├── leads/           # Lead CRUD + n8n notification
-│   │       ├── voice/webhook/   # Retell event handler (HMAC verified)
-│   │       ├── sms/webhook/     # Twilio inbound SMS (form-encoded)
-│   │       ├── chat/            # Claude chat with lead capture tool
-│   │       └── test/trigger-call/ # Dashboard "Call" button endpoint
-│   ├── components/
-│   │   └── ChatWidget.tsx       # Floating chat UI (bottom-right)
+│   │       ├── leads/route.ts      # Lead CRUD + n8n notification
+│   │       ├── voice/webhook/      # Retell event handler (3 events)
+│   │       ├── sms/webhook/        # Twilio inbound SMS
+│   │       ├── chat/route.ts       # Claude Sofia with tool_use
+│   │       └── test/trigger-call/  # Dashboard call button
+│   ├── components/ChatWidget.tsx   # Floating chat UI
 │   └── lib/
-│       ├── supabase.ts          # Supabase clients (admin + anon)
-│       └── types.ts             # Shared TypeScript types
+│       ├── supabase.ts             # Admin + anon Supabase clients
+│       └── types.ts                # Shared TypeScript types
 ├── agents/
-│   ├── voice-qualifier/         # Retell agent prompt + analysis schema
+│   ├── voice-qualifier/prompt.md   # Retell agent script + analysis schema
 │   └── orchestrator/
-│       ├── config.ts            # Detailed system prompt + LeadContext types
-│       └── index.ts             # CancunOrchestrator (tool_use loop)
-├── workflows/                   # n8n workflow JSON (ready to import)
-├── supabase/
-│   ├── migrations/001_initial.sql
-│   └── seed.sql
-└── .claude/skills/              # Claude Code skill files per integration
+│       ├── config.ts               # System prompt + LeadContext types
+│       └── index.ts                # CancunOrchestrator (tool_use loop)
+├── workflows/                      # n8n workflow JSON (ready to import)
+│   ├── workflow-01-lead-ingestion.json
+│   ├── workflow-02-post-call-routing.json
+│   └── workflow-03-sms-followup.json
+└── supabase/
+    ├── migrations/001_initial.sql
+    └── seed.sql
 ```
 
-## API Endpoints
+---
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/api/leads` | — | Create lead, log TCPA consent, notify n8n |
-| GET | `/api/leads` | — | List leads (paginated, filterable by status) |
-| POST | `/api/voice/webhook` | HMAC sig | Retell call events (started/ended/analyzed) |
-| POST | `/api/sms/webhook` | Twilio sig | Inbound SMS from leads |
-| POST | `/api/chat` | — | Claude chat completion with lead capture |
-| POST | `/api/test/trigger-call` | `x-dashboard-secret` | Trigger Retell call for a lead |
+## How It Adapts to Other Verticals
 
-## License
+The architecture is intentionally vertical-agnostic. To adapt to a different industry:
 
-MIT
+1. **Landing page** — swap dental checkboxes for your qualification questions
+2. **Retell agent prompt** (`agents/voice-qualifier/prompt.md`) — rewrite the script and `custom_analysis_data` schema
+3. **Voice webhook** (`/api/voice/webhook`) — update `LEAD_STATUS_MAP` and `CALL_OUTCOME_MAP`
+4. **n8n workflows** — update Switch node outcomes and SMS templates
+5. **Chat widget** (`/api/chat`) — swap Sofia's system prompt
+
+Works for: solar, insurance, real estate, SaaS demos, or any high-ticket inbound/outbound sales flow.

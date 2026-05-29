@@ -38,7 +38,7 @@
               "conditions": {
                 "conditions": [
                   {
-                    "value1": "={{ $json.template }}",
+                    "value1": "={{ $json.body.template }}",
                     "operation": "equal",
                     "value2": "warm_followup"
                   }
@@ -50,7 +50,7 @@
               "conditions": {
                 "conditions": [
                   {
-                    "value1": "={{ $json.template }}",
+                    "value1": "={{ $json.body.template }}",
                     "operation": "equal",
                     "value2": "no_answer_retry"
                   }
@@ -72,8 +72,8 @@
       "parameters": {
         "operation": "send",
         "from": "={{ $vars.TWILIO_FROM_NUMBER }}",
-        "to": "={{ $('Webhook').item.json.phone }}",
-        "message": "Hi {{ $('Webhook').item.json.name }}! This is Sofia from Cancun Dental Care 😊 We spoke recently about your dental needs. We're offering a FREE virtual consultation this week. Would you like to schedule? Reply YES and we'll set it up right away!"
+        "to": "={{ $('Webhook').item.json.body.phone }}",
+        "message": "Hi {{ $('Webhook').item.json.body.name }}! This is Sofia from Cancun Dental Care 😊 We spoke recently about your dental needs. We're offering a FREE virtual consultation this week. Would you like to schedule? Reply YES and we'll set it up right away!"
       },
       "credentials": {
         "twilioApi": {
@@ -96,7 +96,7 @@
           "fieldValues": [
             {
               "fieldId": "lead_id",
-              "fieldValue": "={{ $('Webhook').item.json.lead_id }}"
+              "fieldValue": "={{ $('Webhook').item.json.body.lead_id }}"
             },
             {
               "fieldId": "channel",
@@ -112,7 +112,7 @@
             },
             {
               "fieldId": "to_number",
-              "fieldValue": "={{ $('Webhook').item.json.phone }}"
+              "fieldValue": "={{ $('Webhook').item.json.body.phone }}"
             },
             {
               "fieldId": "body",
@@ -141,8 +141,8 @@
       "parameters": {
         "operation": "send",
         "from": "={{ $vars.TWILIO_FROM_NUMBER }}",
-        "to": "={{ $('Webhook').item.json.phone }}",
-        "message": "Hi {{ $('Webhook').item.json.name }}, this is Sofia from Cancun Dental Care. We tried to reach you earlier about your dental consultation. We have great options for you! Reply CALL ME and we'll reach out at your convenience."
+        "to": "={{ $('Webhook').item.json.body.phone }}",
+        "message": "Hi {{ $('Webhook').item.json.body.name }}, this is Sofia from Cancun Dental Care. We tried to reach you earlier about your dental consultation. We have great options for you! Reply CALL ME and we'll reach out at your convenience."
       },
       "credentials": {
         "twilioApi": {
@@ -165,7 +165,7 @@
           "fieldValues": [
             {
               "fieldId": "lead_id",
-              "fieldValue": "={{ $('Webhook').item.json.lead_id }}"
+              "fieldValue": "={{ $('Webhook').item.json.body.lead_id }}"
             },
             {
               "fieldId": "channel",
@@ -181,7 +181,7 @@
             },
             {
               "fieldId": "to_number",
-              "fieldValue": "={{ $('Webhook').item.json.phone }}"
+              "fieldValue": "={{ $('Webhook').item.json.body.phone }}"
             },
             {
               "fieldId": "body",
