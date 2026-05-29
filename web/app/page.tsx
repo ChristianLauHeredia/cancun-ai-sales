@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { LeadFormData } from "@/lib/types";
+import ChatWidget from "@/components/ChatWidget";
 
 const DENTAL_NEEDS_OPTIONS = [
   { value: "dental_implants", label: "Dental Implants" },
@@ -307,6 +308,7 @@ export default function LandingPage() {
           <a href="/dashboard" className="hover:text-white">Admin Dashboard</a>
         </p>
       </footer>
+      <ChatWidget />
     </div>
   );
 }

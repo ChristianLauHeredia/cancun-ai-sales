@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
 import type { Lead, LeadStatus } from "@/lib/types";
 
 const STATUS_LABELS: Record<LeadStatus, { label: string; color: string }> = {
@@ -37,10 +36,6 @@ function scoreColor(score: number) {
 }
 
 export default function DashboardPage() {
-  const searchParams = useSearchParams();
-  const secret = searchParams.get("secret");
-  const dashboardSecret = process.env.NEXT_PUBLIC_DASHBOARD_SECRET;
-
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"pipeline" | "table">("pipeline");
@@ -68,18 +63,6 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, [fetchLeads]);
 
-  if (dashboardSecret && secret !== dashboardSecret) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center max-w-sm">
-          <div className="text-4xl mb-3">🔒</div>
-          <h2 className="font-bold text-gray-900 mb-1">Access Restricted</h2>
-          <p className="text-sm text-gray-500">Append <code className="bg-gray-100 px-1 rounded">?secret=YOUR_SECRET</code> to the URL.</p>
-        </div>
-      </div>
-    );
-  }
-
   const stats = {
     total: leads.length,
     hot: leads.filter((l) => l.status === "qualified_hot").length,
@@ -104,7 +87,7 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-400">
+          <span className="text-xs text-gray-400" suppressHydrationWarning>
             Updated {lastRefresh.toLocaleTimeString()}
           </span>
           <button
@@ -156,7 +139,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="space-y-2">
                   {leadsByStatus(statuses).map((lead) => (
-                    <LeadCard key={lead.id} lead={lead} dashboardSecret={secret ?? ""} onCallTriggered={fetchLeads} />
+                    <LeadCard key={lead.id} lead={lead} onCallTriggered={fetchLeads} />
                   ))}
                   {leadsByStatus(statuses).length === 0 && (
                     <div className="text-center text-gray-300 text-xs py-6 border border-dashed border-gray-200 rounded-xl">
@@ -219,11 +202,7 @@ export default function DashboardPage() {
                       {new Date(lead.created_at).toLocaleDateString()}
                     </td>
                     <td className="py-3 px-4">
-                      <TriggerCallButton
-                        leadId={lead.id}
-                        dashboardSecret={secret ?? ""}
-                        onSuccess={fetchLeads}
-                      />
+                      <TriggerCallButton leadId={lead.id} onSuccess={fetchLeads} />
                     </td>
                   </tr>
                 ))}
@@ -245,11 +224,9 @@ export default function DashboardPage() {
 
 function TriggerCallButton({
   leadId,
-  dashboardSecret,
   onSuccess,
 }: {
   leadId: string;
-  dashboardSecret: string;
   onSuccess: () => void;
 }) {
   const [state, setState] = useState<"idle" | "loading" | "success" | "error">("idle");
@@ -259,10 +236,7 @@ function TriggerCallButton({
     try {
       const res = await fetch("/api/test/trigger-call", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-dashboard-secret": dashboardSecret,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lead_id: leadId }),
       });
       const data = await res.json();
@@ -307,11 +281,9 @@ function TriggerCallButton({
 
 function LeadCard({
   lead,
-  dashboardSecret,
   onCallTriggered,
 }: {
   lead: Lead;
-  dashboardSecret: string;
   onCallTriggered: () => void;
 }) {
   const statusMeta = STATUS_LABELS[lead.status as LeadStatus];
@@ -335,11 +307,7 @@ function LeadCard({
         </div>
       )}
       <div className="mt-2">
-        <TriggerCallButton
-          leadId={lead.id}
-          dashboardSecret={dashboardSecret}
-          onSuccess={onCallTriggered}
-        />
+        <TriggerCallButton leadId={lead.id} onSuccess={onCallTriggered} />
       </div>
     </div>
   );

@@ -15,8 +15,15 @@ interface RetellCallResponse {
 export async function POST(
   req: NextRequest
 ): Promise<NextResponse<ApiResponse<{ call_id: string }>>> {
-  const secret = req.headers.get("x-dashboard-secret");
-  if (!process.env.DASHBOARD_SECRET || secret !== process.env.DASHBOARD_SECRET) {
+  const dashboardSecret = process.env.DASHBOARD_SECRET;
+  const headerSecret = req.headers.get("x-dashboard-secret");
+  const cookieSecret = req.cookies.get("dashboard_auth")?.value;
+  const isAuthorized =
+    !dashboardSecret ||
+    headerSecret === dashboardSecret ||
+    cookieSecret === dashboardSecret;
+
+  if (!isAuthorized) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
   }
 
