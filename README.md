@@ -4,7 +4,7 @@
 >
 > A production-deployed AI outbound sales system. Patients opt in → AI voice agent calls within minutes → qualifies them live → hot leads get SMS-alerted to the founder or live-transferred → automated SMS follow-up for warm/cold/no-answer outcomes.
 
-**Live:** [cancun-ai-sales.vercel.app](https://cancun-ai-sales.vercel.app)
+**Live:** [cancun-ai-sales.vercel.app](https://cancun-ai-sales.vercel.app) · **Pipeline:** [cancun-ai-sales.vercel.app/dashboard?secret=cancun2026](https://cancun-ai-sales.vercel.app/dashboard?secret=cancun2026)
 
 ---
 
