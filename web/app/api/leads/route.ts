@@ -23,6 +23,15 @@ const createLeadSchema = z.object({
   ip_address: z.string().optional(),
 });
 
+function normalizePhone(phone: string, country: string): string {
+  const stripped = phone.replace(/[^\d+]/g, "");
+  if (stripped.startsWith("+")) return stripped;
+  if (stripped.length >= 11) return "+" + stripped;
+  if (stripped.length === 10 && (country === "US" || country === "CA")) return "+1" + stripped;
+  if (stripped.length === 10 && country === "MX") return "+52" + stripped;
+  return "+" + stripped;
+}
+
 async function notifyN8n(url: string, payload: unknown): Promise<void> {
   if (!url) {
     console.error("[notifyN8n] N8N_LEAD_WEBHOOK_URL is not set");
@@ -56,6 +65,8 @@ export async function POST(
 
   const { consent_tcpa, trusted_form_cert_url, ip_address, ...leadData } =
     parsed.data;
+
+  leadData.phone = normalizePhone(leadData.phone, leadData.country);
 
   if (!consent_tcpa) {
     return NextResponse.json(
