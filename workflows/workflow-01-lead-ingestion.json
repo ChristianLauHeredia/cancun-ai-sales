@@ -1,0 +1,144 @@
+{
+  "name": "workflow-01-lead-ingestion",
+  "nodes": [
+    {
+      "id": "w01-node-01",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-ingestion",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "w01-node-02",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"received\": true } }}"
+      }
+    },
+    {
+      "id": "w01-node-03",
+      "name": "Wait 10s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "w01-node-04",
+      "name": "Create Retell Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.retellai.com/v2/create-phone-call",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "from_number",
+              "value": "={{ $vars.RETELL_FROM_NUMBER }}"
+            },
+            {
+              "name": "to_number",
+              "value": "={{ $('Webhook').item.json.phone }}"
+            },
+            {
+              "name": "agent_id",
+              "value": "={{ $vars.RETELL_AGENT_ID }}"
+            },
+            {
+              "name": "metadata",
+              "value": "={{ { lead_id: $('Webhook').item.json.lead_id } }}"
+            },
+            {
+              "name": "retell_llm_dynamic_variables",
+              "value": "={{ { lead_name: $('Webhook').item.json.first_name, dental_need: ($('Webhook').item.json.dental_needs ?? [])[0] ?? '', timeline: $('Webhook').item.json.preferred_timeline ?? '', budget: $('Webhook').item.json.estimated_budget ?? '' } }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "retell-api-cred",
+          "name": "RetellAI-API"
+        }
+      }
+    },
+    {
+      "id": "w01-node-05",
+      "name": "Update Lead Status",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "parameters": {
+        "operation": "update",
+        "tableId": "leads",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "keyValue": "={{ $('Webhook').item.json.lead_id }}"
+            }
+          ]
+        },
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "status",
+              "fieldValue": "call_scheduled"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-api-cred",
+          "name": "Supabase-API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Respond 200", "type": "main", "index": 0 }]
+      ]
+    },
+    "Respond 200": {
+      "main": [
+        [{ "node": "Wait 10s", "type": "main", "index": 0 }]
+      ]
+    },
+    "Wait 10s": {
+      "main": [
+        [{ "node": "Create Retell Call", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Retell Call": {
+      "main": [
+        [{ "node": "Update Lead Status", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null
+}

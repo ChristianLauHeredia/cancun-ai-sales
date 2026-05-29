@@ -1,0 +1,237 @@
+{
+  "name": "workflow-03-sms-followup",
+  "nodes": [
+    {
+      "id": "w03-node-01",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sms-followup",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "w03-node-02",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"received\": true } }}"
+      }
+    },
+    {
+      "id": "w03-node-03",
+      "name": "Route by Template",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "value1": "={{ $json.template }}",
+                    "operation": "equal",
+                    "value2": "warm_followup"
+                  }
+                ]
+              },
+              "output": 0
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "value1": "={{ $json.template }}",
+                    "operation": "equal",
+                    "value2": "no_answer_retry"
+                  }
+                ]
+              },
+              "output": 1
+            }
+          ],
+          "fallbackOutput": 1
+        }
+      }
+    },
+    {
+      "id": "w03-node-04",
+      "name": "SMS Warm Followup",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [900, 200],
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $vars.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $('Webhook').item.json.phone }}",
+        "message": "Hi {{ $('Webhook').item.json.name }}! This is Sofia from Cancun Dental Care 😊 We spoke recently about your dental needs. We're offering a FREE virtual consultation this week. Would you like to schedule? Reply YES and we'll set it up right away!"
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "twilio-account-cred",
+          "name": "Twilio-Account"
+        }
+      }
+    },
+    {
+      "id": "w03-node-05",
+      "name": "Log Message Warm",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1100, 200],
+      "parameters": {
+        "operation": "create",
+        "tableId": "messages",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "lead_id",
+              "fieldValue": "={{ $('Webhook').item.json.lead_id }}"
+            },
+            {
+              "fieldId": "channel",
+              "fieldValue": "sms"
+            },
+            {
+              "fieldId": "direction",
+              "fieldValue": "outbound"
+            },
+            {
+              "fieldId": "from_number",
+              "fieldValue": "={{ $vars.TWILIO_FROM_NUMBER }}"
+            },
+            {
+              "fieldId": "to_number",
+              "fieldValue": "={{ $('Webhook').item.json.phone }}"
+            },
+            {
+              "fieldId": "body",
+              "fieldValue": "warm_followup"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "sent"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-api-cred",
+          "name": "Supabase-API"
+        }
+      }
+    },
+    {
+      "id": "w03-node-06",
+      "name": "SMS No Answer Retry",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [900, 420],
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $vars.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $('Webhook').item.json.phone }}",
+        "message": "Hi {{ $('Webhook').item.json.name }}, this is Sofia from Cancun Dental Care. We tried to reach you earlier about your dental consultation. We have great options for you! Reply CALL ME and we'll reach out at your convenience."
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "twilio-account-cred",
+          "name": "Twilio-Account"
+        }
+      }
+    },
+    {
+      "id": "w03-node-07",
+      "name": "Log Message No Answer",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1100, 420],
+      "parameters": {
+        "operation": "create",
+        "tableId": "messages",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "lead_id",
+              "fieldValue": "={{ $('Webhook').item.json.lead_id }}"
+            },
+            {
+              "fieldId": "channel",
+              "fieldValue": "sms"
+            },
+            {
+              "fieldId": "direction",
+              "fieldValue": "outbound"
+            },
+            {
+              "fieldId": "from_number",
+              "fieldValue": "={{ $vars.TWILIO_FROM_NUMBER }}"
+            },
+            {
+              "fieldId": "to_number",
+              "fieldValue": "={{ $('Webhook').item.json.phone }}"
+            },
+            {
+              "fieldId": "body",
+              "fieldValue": "no_answer_retry"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "sent"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-api-cred",
+          "name": "Supabase-API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Respond 200", "type": "main", "index": 0 }]
+      ]
+    },
+    "Respond 200": {
+      "main": [
+        [{ "node": "Route by Template", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route by Template": {
+      "main": [
+        [{ "node": "SMS Warm Followup", "type": "main", "index": 0 }],
+        [{ "node": "SMS No Answer Retry", "type": "main", "index": 0 }]
+      ]
+    },
+    "SMS Warm Followup": {
+      "main": [
+        [{ "node": "Log Message Warm", "type": "main", "index": 0 }]
+      ]
+    },
+    "SMS No Answer Retry": {
+      "main": [
+        [{ "node": "Log Message No Answer", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null
+}

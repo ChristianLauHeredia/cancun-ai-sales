@@ -24,15 +24,20 @@ const createLeadSchema = z.object({
 });
 
 async function notifyN8n(url: string, payload: unknown): Promise<void> {
-  if (!url) return;
+  if (!url) {
+    console.error("[notifyN8n] N8N_LEAD_WEBHOOK_URL is not set");
+    return;
+  }
   try {
-    await fetch(url, {
+    console.log("[notifyN8n] calling", url);
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-  } catch {
-    // best-effort — workflow will still run on retry
+    console.log("[notifyN8n] response", res.status);
+  } catch (err) {
+    console.error("[notifyN8n] error", err);
   }
 }
 
